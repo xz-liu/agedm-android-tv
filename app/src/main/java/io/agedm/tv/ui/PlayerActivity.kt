@@ -786,16 +786,17 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun navigateBackToDetail() {
         val animeId = detail?.animeId ?: intent.getLongExtra(EXTRA_ANIME_ID, 0L)
-        val route = if (animeId > 0L) {
-            AgeLinks.buildWebUrl(AgeRoute.Detail(animeId))
+        if (animeId > 0L) {
+            startActivity(
+                DetailActivity.createIntent(this, animeId)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
         } else {
-            AgeLinks.BASE_WEB_URL
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
         }
-        startActivity(
-            Intent(this, MainActivity::class.java)
-                .putExtra(MainActivity.EXTRA_OPEN_ROUTE, route)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-        )
         finish()
     }
 

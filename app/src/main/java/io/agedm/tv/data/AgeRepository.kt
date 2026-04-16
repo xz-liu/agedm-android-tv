@@ -20,9 +20,111 @@ class AgeRepository(
 ) {
 
     suspend fun fetchDetail(animeId: Long): AnimeDetail = withContext(Dispatchers.IO) {
-        val body = get("https://api.agedm.io/v2/detail/$animeId")
+        val body = get(apiUrl("detail/$animeId"))
         val response = json.decodeFromString<AgeDetailResponse>(body)
         response.toAnimeDetail()
+    }
+
+    suspend fun fetchHomeFeed(): HomeFeed = withContext(Dispatchers.IO) {
+        val body = get(apiUrl("home-list"))
+        val response = json.decodeFromString<AgeHomeResponse>(body)
+        HomeFeed(
+            latest = response.latest.map { it.toPosterCard() },
+            recommend = response.recommend.map { it.toPosterCard() },
+            dailySections = response.weekList
+                .entries
+                .sortedBy { weekDaySort(it.key) }
+                .mapNotNull { (key, items) ->
+                    val mapped = items.map { it.toScheduleCard() }
+                    if (mapped.isEmpty()) {
+                        null
+                    } else {
+                        BrowseSection(
+                            title = weekDayTitle(key),
+                            subtitle = "${mapped.size} 部作品",
+                            items = mapped,
+                        )
+                    }
+                },
+        )
+    }
+
+    suspend fun fetchRecommend(page: Int = 1, size: Int = 100): PagedCards = withContext(Dispatchers.IO) {
+        val body = get(apiUrl("recommend"))
+        val response = json.decodeFromString<AgePosterListResponse>(body)
+        PagedCards(
+            items = response.videos.map { it.toPosterCard() },
+            total = response.total,
+            page = page,
+            size = size,
+        )
+    }
+
+    suspend fun fetchUpdate(page: Int, size: Int = 30): PagedCards = withContext(Dispatchers.IO) {
+        val body = get(apiUrl("update", "page" to page.toString(), "size" to size.toString()))
+        val response = json.decodeFromString<AgePosterListResponse>(body)
+        PagedCards(
+            items = response.videos.map { it.toPosterCard() },
+            total = response.total,
+            page = page,
+            size = size,
+        )
+    }
+
+    suspend fun fetchCatalog(query: CatalogQuery): PagedCards = withContext(Dispatchers.IO) {
+        val body = get(
+            apiUrl(
+                "catalog",
+                "page" to query.page.toString(),
+                "size" to query.size.toString(),
+                "region" to query.region,
+                "genre" to query.genre,
+                "label" to query.label,
+                "year" to query.year,
+                "season" to query.season,
+                "status" to query.status,
+                "resource" to query.resource,
+                "letter" to query.letter,
+                "order" to query.order,
+            ),
+        )
+        val response = json.decodeFromString<AgeCatalogResponse>(body)
+        PagedCards(
+            items = response.videos.map { it.toAnimeCard() },
+            total = response.total,
+            page = query.page,
+            size = query.size,
+        )
+    }
+
+    suspend fun search(query: String, page: Int, size: Int = 24): PagedCards = withContext(Dispatchers.IO) {
+        val body = get(
+            apiUrl(
+                "search",
+                "query" to query,
+                "page" to page.toString(),
+            ),
+        )
+        val response = json.decodeFromString<AgeSearchResponse>(body)
+        PagedCards(
+            items = response.data.videos.map { it.toAnimeCard() },
+            total = response.data.total,
+            page = page,
+            size = size,
+        )
+    }
+
+    suspend fun fetchRankSections(year: String = "all"): List<BrowseSection> = withContext(Dispatchers.IO) {
+        val body = get(apiUrl("rank", "year" to year))
+        val response = json.decodeFromString<AgeRankResponse>(body)
+        val titles = listOf("周榜", "月榜", "总榜")
+        response.rank.mapIndexed { index, entries ->
+            BrowseSection(
+                title = titles.getOrElse(index) { "排行榜" },
+                subtitle = if (year == "all") "Top ${entries.size}" else "$year 年 Top ${entries.size}",
+                items = entries.map { it.toAnimeCard(titles.getOrElse(index) { "排行榜" }) },
+            )
+        }
     }
 
     suspend fun resolveStream(
@@ -100,6 +202,10 @@ class AgeRepository(
         }
     }
 
+    fun buildCoverUrl(animeId: Long): String {
+        return "$DEFAULT_COVER_BASE/$animeId.jpg"
+    }
+
     private fun get(url: String): String {
         val request = Request.Builder()
             .url(url)
@@ -162,7 +268,92 @@ class AgeRepository(
         )
     }
 
+    private fun AgeRelatedItem.toPosterCard(): AnimeCard {
+        return AnimeCard(
+            animeId = animeId,
+            title = title,
+            cover = cover,
+            badge = updateLabel,
+            subtitle = "AGE 动画",
+        )
+    }
+
+    private fun AgeScheduleItem.toScheduleCard(): AnimeCard {
+        return AnimeCard(
+            animeId = id,
+            title = name,
+            cover = buildCoverUrl(id),
+            badge = if (isNew > 0) "NEW" else "",
+            subtitle = nameForNew.ifBlank { mtime.substringAfter(' ', "") },
+        )
+    }
+
+    private fun AgeCatalogVideo.toAnimeCard(): AnimeCard {
+        val subtitleParts = buildList {
+            if (premiere.isNotBlank()) add(premiere)
+            if (genreType.isNotBlank()) add(genreType)
+            if (status.isNotBlank()) add(status)
+        }
+        return AnimeCard(
+            animeId = id,
+            title = name,
+            cover = cover,
+            badge = updateLabel,
+            subtitle = subtitleParts.joinToString(" · "),
+            description = tags.ifBlank { writer.ifBlank { company } },
+        )
+    }
+
+    private fun AgeRankItem.toAnimeCard(rankTitle: String): AnimeCard {
+        return AnimeCard(
+            animeId = animeId,
+            title = title,
+            cover = buildCoverUrl(animeId),
+            badge = "#$order",
+            subtitle = "$rankTitle · $countLabel",
+        )
+    }
+
+    private fun apiUrl(path: String, vararg queryPairs: Pair<String, String>): String {
+        val builder = "${API_BASE_URL.trimEnd('/')}/$path".toHttpUrlOrNull()?.newBuilder()
+            ?: throw IOException("无效接口地址 $path")
+        queryPairs.forEach { (name, value) ->
+            if (value.isNotBlank()) {
+                builder.addQueryParameter(name, value)
+            }
+        }
+        return builder.build().toString()
+    }
+
+    private fun weekDaySort(rawKey: String): Int {
+        return when (rawKey) {
+            "1" -> 1
+            "2" -> 2
+            "3" -> 3
+            "4" -> 4
+            "5" -> 5
+            "6" -> 6
+            "0" -> 7
+            else -> 99
+        }
+    }
+
+    private fun weekDayTitle(rawKey: String): String {
+        return when (rawKey) {
+            "1" -> "周一追番"
+            "2" -> "周二追番"
+            "3" -> "周三追番"
+            "4" -> "周四追番"
+            "5" -> "周五追番"
+            "6" -> "周六追番"
+            "0" -> "周日追番"
+            else -> "每日更新"
+        }
+    }
+
     companion object {
+        private const val API_BASE_URL = "https://api.agedm.io/v2"
+        private const val DEFAULT_COVER_BASE = "https://cdn.aqdstatic.com:966/age"
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 

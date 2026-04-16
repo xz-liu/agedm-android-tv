@@ -1,29 +1,32 @@
 package io.agedm.tv.ui
 
-import android.annotation.SuppressLint
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
-import android.view.KeyEvent
+import android.text.InputType
 import android.view.View
 import android.widget.Button
-import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.widget.EditText
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import io.agedm.tv.R
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
+import io.agedm.tv.R
 import io.agedm.tv.data.AgeLinks
 import io.agedm.tv.data.AgeRoute
+import io.agedm.tv.data.AnimeCard
+import io.agedm.tv.data.BrowseSection
+import io.agedm.tv.data.CatalogQuery
+import io.agedm.tv.data.PlaybackRecord
 import io.agedm.tv.databinding.ActivityMainBinding
+import io.agedm.tv.ui.adapter.BrowseSectionAdapter
+import io.agedm.tv.ui.adapter.PosterCardAdapter
+import java.util.Calendar
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -31,37 +34,57 @@ import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private data class NavDestination(
-        val button: Button,
-        val route: AgeRoute,
-        val matches: (String) -> Boolean,
+    private enum class Screen {
+        HOME,
+        CATALOG,
+        RECOMMEND,
+        UPDATE,
+        RANK,
+        SEARCH,
+    }
+
+    private data class FilterOption(
+        val label: String,
+        val value: String,
+    )
+
+    private data class FilterAction(
+        val title: String,
+        val options: List<FilterOption>,
+        val labelProvider: () -> String,
+        val onSelected: (String) -> Unit,
     )
 
     private lateinit var binding: ActivityMainBinding
+    private lateinit var sectionAdapter: BrowseSectionAdapter
+    private lateinit var gridAdapter: PosterCardAdapter
+
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
 
-    private var currentRoute: AgeRoute = AgeRoute.Home
+    private var currentScreen: Screen = Screen.HOME
+    private var currentSearchQuery: String? = null
+    private var currentPage: Int = 1
+    private var currentPageSize: Int = 30
+    private var currentTotal: Int = 0
+    private var catalogQuery = CatalogQuery()
+    private var rankYear = "all"
+    private var loadJob: Job? = null
     private var overlayJob: Job? = null
-    private var lastPlayLaunchUrl: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        setupRecycler()
         setupChrome()
-        setupWebView()
         setupBottomNav()
         setupBackBehavior()
         collectIncomingRoutes()
 
-        if (savedInstanceState != null) {
-            binding.webView.restoreState(savedInstanceState)
-        } else {
-            if (!handleIntent(intent)) {
-                loadRoute(AgeRoute.Home)
-            }
+        if (!handleIntent(intent)) {
+            openScreen(Screen.HOME)
         }
     }
 
@@ -71,162 +94,49 @@ class MainActivity : AppCompatActivity() {
         handleIntent(intent)
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        binding.webView.saveState(outState)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        binding.webView.onResume()
-    }
-
-    override fun onPause() {
-        binding.webView.onPause()
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        binding.webView.apply {
-            stopLoading()
-            loadUrl("about:blank")
-            removeAllViews()
-            destroy()
-        }
-        super.onDestroy()
-    }
-
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN && binding.webView.hasFocus()) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    dispatchWebMove("left")
-                    return true
-                }
-
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    dispatchWebMove("right")
-                    return true
-                }
-
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    dispatchWebMove("down") { focusBottomNav() }
-                    return true
-                }
-
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    dispatchWebMove("up") { binding.backButton.requestFocus() }
-                    return true
-                }
-
-                KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER,
-                KeyEvent.KEYCODE_NUMPAD_ENTER,
-                -> {
-                    binding.webView.evaluateJavascript(WebFocusScripts.ACTIVATE_SCRIPT, null)
-                    return true
-                }
-            }
-        }
-        return super.dispatchKeyEvent(event)
+    private fun setupRecycler() {
+        sectionAdapter = BrowseSectionAdapter(::openDetail)
+        gridAdapter = PosterCardAdapter(::openDetail)
+        binding.contentRecycler.itemAnimator = null
+        binding.contentRecycler.layoutManager = LinearLayoutManager(this)
+        binding.contentRecycler.adapter = sectionAdapter
     }
 
     private fun setupChrome() {
-        binding.backButton.setOnClickListener {
-            navigateBackInWeb()
-        }
-
-        binding.homeButton.setOnClickListener {
-            loadRoute(AgeRoute.Home)
-        }
-
+        binding.backButton.setOnClickListener { navigateBack() }
+        binding.homeButton.setOnClickListener { openScreen(Screen.HOME) }
+        binding.searchButton.setOnClickListener { showSearchDialog(currentSearchQuery) }
         binding.castButton.setOnClickListener {
             startActivity(Intent(this, LinkCastActivity::class.java))
         }
-
         binding.continueButton.setOnClickListener {
-            val detailRoute = currentRoute as? AgeRoute.Detail ?: return@setOnClickListener
-            val record = app.playbackStore.getRecord(detailRoute.animeId) ?: return@setOnClickListener
-            launchPlayer(
-                route = AgeRoute.Play(
-                    animeId = record.animeId,
-                    sourceIndex = 1,
-                    episodeIndex = record.episodeIndex + 1,
-                ),
-                preferredSourceKey = record.sourceKey,
-                resumePositionMs = record.positionMs,
-                preferResumePrompt = false,
-            )
+            app.playbackStore.getRecentRecords(1).firstOrNull()?.let(::launchPlayerForRecord)
+        }
+        binding.prevPageButton.setOnClickListener {
+            if (currentPage > 1) {
+                openScreen(currentScreen, currentPage - 1)
+            }
+        }
+        binding.nextPageButton.setOnClickListener {
+            if (currentPage * currentPageSize < currentTotal) {
+                openScreen(currentScreen, currentPage + 1)
+            }
         }
     }
 
     private fun setupBottomNav() {
-        bottomNavDestinations().forEach { destination ->
-            destination.button.setOnClickListener {
-                loadRoute(destination.route)
-            }
-        }
-        updateBottomNavSelection(AgeLinks.buildWebUrl(currentRoute))
+        binding.navHomeButton.setOnClickListener { openScreen(Screen.HOME) }
+        binding.navCatalogButton.setOnClickListener { openScreen(Screen.CATALOG) }
+        binding.navRecommendButton.setOnClickListener { openScreen(Screen.RECOMMEND) }
+        binding.navUpdateButton.setOnClickListener { openScreen(Screen.UPDATE) }
+        binding.navRankButton.setOnClickListener { openScreen(Screen.RANK) }
+        updateBottomNav()
     }
 
     private fun setupBackBehavior() {
         onBackPressedDispatcher.addCallback(this) {
-            navigateBackInWeb()
+            navigateBack()
         }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView() {
-        val cookieManager = CookieManager.getInstance()
-        cookieManager.setAcceptCookie(true)
-        cookieManager.setAcceptThirdPartyCookies(binding.webView, true)
-
-        binding.webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            userAgentString = AGE_USER_AGENT
-            loadWithOverviewMode = true
-            useWideViewPort = true
-            builtInZoomControls = false
-            displayZoomControls = false
-        }
-
-        binding.webView.webChromeClient = object : WebChromeClient() {
-            override fun onReceivedTitle(view: WebView?, title: String?) {
-                if (!title.isNullOrBlank()) {
-                    binding.pageTitle.text = title
-                }
-            }
-        }
-
-        binding.webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView?,
-                request: WebResourceRequest?,
-            ): Boolean {
-                val url = request?.url?.toString().orEmpty()
-                if (request?.isForMainFrame != true) return false
-                if (!AgeLinks.isAllowedTopLevelUrl(url)) {
-                    showOverlayMessage("仅支持 AGE DM 页面")
-                    return true
-                }
-                val route = AgeLinks.parseCurrentUrl(url)
-                if (route is AgeRoute.Play) {
-                    launchPlayer(route)
-                    return true
-                }
-                return false
-            }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                binding.webView.evaluateJavascript(WebFocusScripts.installScript, null)
-                onRouteChanged(url)
-            }
-        }
-
-        binding.webView.addJavascriptInterface(WebBridge(), "AgeBridge")
     }
 
     private fun collectIncomingRoutes() {
@@ -248,138 +158,468 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    private fun loadRoute(route: AgeRoute) {
-        currentRoute = route
-        lastPlayLaunchUrl = null
-        val url = AgeLinks.buildWebUrl(route)
-        updateChromeForRoute(route, url)
-        binding.webView.loadUrl(url)
-        binding.webView.requestFocus()
-    }
-
     private fun openRoute(route: AgeRoute) {
         when (route) {
+            AgeRoute.Home -> openScreen(Screen.HOME)
+            is AgeRoute.Detail -> openDetail(route.animeId)
             is AgeRoute.Play -> launchPlayer(route)
-            else -> loadRoute(route)
+            is AgeRoute.Search -> {
+                if (route.query.isNullOrBlank()) {
+                    showSearchDialog()
+                } else {
+                    currentSearchQuery = route.query
+                    openScreen(Screen.SEARCH, page = 1)
+                }
+            }
+
+            is AgeRoute.Web -> when {
+                route.url.contains("/catalog") -> openScreen(Screen.CATALOG)
+                route.url.contains("/recommend") -> openScreen(Screen.RECOMMEND)
+                route.url.contains("/update") -> openScreen(Screen.UPDATE)
+                route.url.contains("/rank") -> openScreen(Screen.RANK)
+                else -> openScreen(Screen.HOME)
+            }
         }
     }
 
-    private fun launchPlayer(
-        route: AgeRoute.Play,
-        preferredSourceKey: String? = null,
-        resumePositionMs: Long = 0L,
-        preferResumePrompt: Boolean = true,
+    private fun openScreen(screen: Screen, page: Int = 1) {
+        currentScreen = screen
+        currentPage = page
+        currentPageSize = when (screen) {
+            Screen.SEARCH -> 24
+            Screen.RECOMMEND -> 100
+            else -> 30
+        }
+        updateBottomNav()
+        updateContinueButton()
+        when (screen) {
+            Screen.HOME -> loadHome()
+            Screen.CATALOG -> loadCatalog(page)
+            Screen.RECOMMEND -> loadRecommend()
+            Screen.UPDATE -> loadUpdate(page)
+            Screen.RANK -> loadRank()
+            Screen.SEARCH -> loadSearch(page)
+        }
+    }
+
+    private fun loadHome() {
+        renderLoading("正在整理首页...")
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            runCatching {
+                val feed = app.ageRepository.fetchHomeFeed()
+                buildList {
+                    val recent = app.playbackStore.getRecentRecords(8).map(::recordToCard)
+                    if (recent.isNotEmpty()) {
+                        add(BrowseSection("继续观看", "按最近观看时间排序", recent))
+                    }
+                    feed.dailySections.firstOrNull { it.title.startsWith(todayWeekdayPrefix()) }?.let {
+                        add(BrowseSection("今日更新", it.subtitle, it.items))
+                    }
+                    add(BrowseSection("最近更新", "AGE 首页最新上架", feed.latest.take(12)))
+                    add(BrowseSection("每日推荐", "站内推荐作品", feed.recommend.take(12)))
+                }
+            }.onSuccess { sections ->
+                binding.pageTitle.text = getString(R.string.app_name)
+                binding.pageSubtitle.text = "推荐、更新与继续观看"
+                showSections(sections, emptyMessage = "首页暂时没有内容")
+            }.onFailure { error ->
+                showError("首页加载失败：${error.message.orEmpty()}")
+            }
+        }
+    }
+
+    private fun loadCatalog(page: Int) {
+        catalogQuery = catalogQuery.copy(page = page, size = 30)
+        renderLoading("正在加载目录...")
+        applyFilterActions(catalogFilterActions(), showReset = true) {
+            catalogQuery = CatalogQuery()
+            openScreen(Screen.CATALOG)
+        }
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            runCatching { app.ageRepository.fetchCatalog(catalogQuery) }
+                .onSuccess { result ->
+                    currentTotal = result.total
+                    currentPageSize = result.size
+                    binding.pageTitle.text = "目录"
+                    binding.pageSubtitle.text = "按 AGE 分类快速找番"
+                    showGrid(result.items, emptyMessage = "当前筛选下没有结果")
+                    updatePagination(visible = result.total > result.size)
+                }
+                .onFailure { error ->
+                    showError("目录加载失败：${error.message.orEmpty()}")
+                }
+        }
+    }
+
+    private fun loadRecommend() {
+        renderLoading("正在加载推荐...")
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            runCatching { app.ageRepository.fetchRecommend() }
+                .onSuccess { result ->
+                    currentTotal = result.total
+                    binding.pageTitle.text = "推荐"
+                    binding.pageSubtitle.text = "AGE 站内精选片单"
+                    showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
+                }
+                .onFailure { error ->
+                    showError("推荐加载失败：${error.message.orEmpty()}")
+                }
+        }
+    }
+
+    private fun loadUpdate(page: Int) {
+        renderLoading("正在加载更新...")
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            runCatching { app.ageRepository.fetchUpdate(page = page, size = 30) }
+                .onSuccess { result ->
+                    currentTotal = result.total
+                    currentPageSize = result.size
+                    binding.pageTitle.text = "更新"
+                    binding.pageSubtitle.text = "最近更新的动画作品"
+                    showGrid(result.items, emptyMessage = "更新区暂时没有内容")
+                    updatePagination(visible = result.total > result.size)
+                }
+                .onFailure { error ->
+                    showError("更新加载失败：${error.message.orEmpty()}")
+                }
+        }
+    }
+
+    private fun loadRank() {
+        renderLoading("正在加载排行...")
+        applyFilterActions(rankFilterActions(), showReset = false)
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            runCatching { app.ageRepository.fetchRankSections(rankYear) }
+                .onSuccess { sections ->
+                    binding.pageTitle.text = "排行"
+                    binding.pageSubtitle.text = if (rankYear == "all") {
+                        "站内热门 Top 榜单"
+                    } else {
+                        "$rankYear 年度热门榜单"
+                    }
+                    showSections(sections, emptyMessage = "排行榜暂时没有内容")
+                }
+                .onFailure { error ->
+                    showError("排行加载失败：${error.message.orEmpty()}")
+                }
+        }
+    }
+
+    private fun loadSearch(page: Int) {
+        val query = currentSearchQuery?.trim().orEmpty()
+        if (query.isBlank()) {
+            showSearchDialog()
+            return
+        }
+        renderLoading("正在搜索「$query」...")
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            runCatching { app.ageRepository.search(query = query, page = page, size = 24) }
+                .onSuccess { result ->
+                    currentTotal = result.total
+                    currentPageSize = result.size
+                    binding.pageTitle.text = "搜索"
+                    binding.pageSubtitle.text = "「$query」相关结果"
+                    showGrid(result.items, emptyMessage = "没有搜索到相关动画")
+                    updatePagination(visible = result.total > result.size)
+                }
+                .onFailure { error ->
+                    showError("搜索失败：${error.message.orEmpty()}")
+                }
+        }
+    }
+
+    private fun showSections(sections: List<BrowseSection>, emptyMessage: String) {
+        binding.loadingLayout.isVisible = false
+        binding.contentRecycler.isVisible = true
+        binding.contentRecycler.layoutManager = LinearLayoutManager(this)
+        binding.contentRecycler.adapter = sectionAdapter
+        sectionAdapter.submitList(sections)
+        binding.emptyStateText.isVisible = sections.isEmpty()
+        binding.emptyStateText.text = emptyMessage
+        updateFocusTargets()
+    }
+
+    private fun showGrid(items: List<AnimeCard>, emptyMessage: String) {
+        binding.loadingLayout.isVisible = false
+        binding.contentRecycler.isVisible = true
+        binding.contentRecycler.layoutManager = GridLayoutManager(this, 5)
+        binding.contentRecycler.adapter = gridAdapter
+        gridAdapter.submitList(items)
+        binding.emptyStateText.isVisible = items.isEmpty()
+        binding.emptyStateText.text = emptyMessage
+        updateFocusTargets()
+    }
+
+    private fun renderLoading(message: String) {
+        binding.loadingText.text = message
+        binding.loadingLayout.isVisible = true
+        binding.emptyStateText.isVisible = false
+        binding.contentRecycler.isVisible = true
+    }
+
+    private fun showError(message: String) {
+        binding.loadingLayout.isVisible = false
+        binding.emptyStateText.text = message
+        binding.emptyStateText.isVisible = true
+        binding.contentRecycler.isVisible = true
+    }
+
+    private fun updateContinueButton() {
+        val recent = app.playbackStore.getRecentRecords(1).firstOrNull()
+        binding.continueButton.isVisible = recent != null
+        binding.continueButton.text = recent?.let { "继续 ${it.animeTitle}" } ?: getString(R.string.btn_continue)
+    }
+
+    private fun updateBottomNav() {
+        binding.navHomeButton.isSelected = currentScreen == Screen.HOME
+        binding.navCatalogButton.isSelected = currentScreen == Screen.CATALOG
+        binding.navRecommendButton.isSelected = currentScreen == Screen.RECOMMEND
+        binding.navUpdateButton.isSelected = currentScreen == Screen.UPDATE
+        binding.navRankButton.isSelected = currentScreen == Screen.RANK
+    }
+
+    private fun updatePagination(visible: Boolean) {
+        binding.paginationBar.isVisible = visible
+        binding.pageIndicator.text = "第 $currentPage 页 / 共 ${maxOf(1, totalPages())} 页"
+        binding.prevPageButton.isEnabled = currentPage > 1
+        binding.nextPageButton.isEnabled = currentPage * currentPageSize < currentTotal
+    }
+
+    private fun totalPages(): Int {
+        if (currentPageSize <= 0 || currentTotal <= 0) return 1
+        return ((currentTotal - 1) / currentPageSize) + 1
+    }
+
+    private fun applyFilterActions(
+        actions: List<FilterAction>,
+        showReset: Boolean,
+        onReset: (() -> Unit)? = null,
     ) {
-        lastPlayLaunchUrl = AgeLinks.buildWebUrl(route)
+        val buttons = listOf(
+            binding.filterPrimaryButton,
+            binding.filterSecondaryButton,
+            binding.filterTertiaryButton,
+            binding.filterQuaternaryButton,
+            binding.filterFifthButton,
+        )
+
+        buttons.forEach { button ->
+            button.isVisible = false
+            button.setOnClickListener(null)
+        }
+
+        actions.forEachIndexed { index, action ->
+            val button = buttons.getOrNull(index) ?: return@forEachIndexed
+            button.isVisible = true
+            button.text = action.labelProvider()
+            button.setOnClickListener {
+                showFilterDialog(action)
+            }
+        }
+
+        binding.filterResetButton.isVisible = showReset
+        binding.filterResetButton.setOnClickListener { onReset?.invoke() }
+        binding.filterScroll.isVisible = actions.isNotEmpty() || showReset
+        updateFocusTargets()
+    }
+
+    private fun showFilterDialog(action: FilterAction) {
+        val selectedLabel = action.labelProvider().substringAfter('·', "").trim()
+        val items = action.options.map { option ->
+            if (option.label == selectedLabel) "✓ ${option.label}" else option.label
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(action.title)
+            .setItems(items) { _, which ->
+                action.onSelected(action.options[which].value)
+            }
+            .show()
+    }
+
+    private fun catalogFilterActions(): List<FilterAction> {
+        return listOf(
+            FilterAction(
+                title = "地区",
+                options = REGION_OPTIONS,
+                labelProvider = { "地区 · ${labelFor(REGION_OPTIONS, catalogQuery.region)}" },
+                onSelected = { value ->
+                    catalogQuery = catalogQuery.copy(region = value, page = 1)
+                    openScreen(Screen.CATALOG)
+                },
+            ),
+            FilterAction(
+                title = "版本",
+                options = GENRE_OPTIONS,
+                labelProvider = { "版本 · ${labelFor(GENRE_OPTIONS, catalogQuery.genre)}" },
+                onSelected = { value ->
+                    catalogQuery = catalogQuery.copy(genre = value, page = 1)
+                    openScreen(Screen.CATALOG)
+                },
+            ),
+            FilterAction(
+                title = "类型",
+                options = LABEL_OPTIONS,
+                labelProvider = { "类型 · ${labelFor(LABEL_OPTIONS, catalogQuery.label)}" },
+                onSelected = { value ->
+                    catalogQuery = catalogQuery.copy(label = value, page = 1)
+                    openScreen(Screen.CATALOG)
+                },
+            ),
+            FilterAction(
+                title = "年份",
+                options = YEAR_OPTIONS,
+                labelProvider = { "年份 · ${labelFor(YEAR_OPTIONS, catalogQuery.year)}" },
+                onSelected = { value ->
+                    catalogQuery = catalogQuery.copy(year = value, page = 1)
+                    openScreen(Screen.CATALOG)
+                },
+            ),
+            FilterAction(
+                title = "排序",
+                options = ORDER_OPTIONS,
+                labelProvider = { "排序 · ${labelFor(ORDER_OPTIONS, catalogQuery.order)}" },
+                onSelected = { value ->
+                    catalogQuery = catalogQuery.copy(order = value, page = 1)
+                    openScreen(Screen.CATALOG)
+                },
+            ),
+        )
+    }
+
+    private fun rankFilterActions(): List<FilterAction> {
+        return listOf(
+            FilterAction(
+                title = "首播年份",
+                options = YEAR_OPTIONS,
+                labelProvider = { "年份 · ${labelFor(YEAR_OPTIONS, rankYear)}" },
+                onSelected = { value ->
+                    rankYear = value
+                    openScreen(Screen.RANK)
+                },
+            ),
+        )
+    }
+
+    private fun updateFocusTargets() {
+        val firstFilter = visibleFilterButtons().firstOrNull()
+        listOf(
+            binding.navHomeButton,
+            binding.navCatalogButton,
+            binding.navRecommendButton,
+            binding.navUpdateButton,
+            binding.navRankButton,
+        ).forEach { button ->
+            button.nextFocusDownId = firstFilter?.id ?: binding.contentRecycler.id
+        }
+
+        visibleFilterButtons().forEach { button ->
+            button.nextFocusUpId = currentNavButton().id
+            button.nextFocusDownId = binding.contentRecycler.id
+        }
+    }
+
+    private fun currentNavButton(): Button {
+        return when (currentScreen) {
+            Screen.HOME -> binding.navHomeButton
+            Screen.CATALOG -> binding.navCatalogButton
+            Screen.RECOMMEND -> binding.navRecommendButton
+            Screen.UPDATE -> binding.navUpdateButton
+            Screen.RANK -> binding.navRankButton
+            Screen.SEARCH -> binding.navHomeButton
+        }
+    }
+
+    private fun visibleFilterButtons(): List<Button> {
+        return listOf(
+            binding.filterPrimaryButton,
+            binding.filterSecondaryButton,
+            binding.filterTertiaryButton,
+            binding.filterQuaternaryButton,
+            binding.filterFifthButton,
+            binding.filterResetButton,
+        ).filter { it.isVisible }
+    }
+
+    private fun showSearchDialog(initialQuery: String? = null) {
+        val input = EditText(this).apply {
+            hint = "输入动画名或关键词"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setText(initialQuery.orEmpty())
+            setSelection(text?.length ?: 0)
+            setPadding(48, 36, 48, 36)
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("搜索 AGE 动画")
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("搜索") { _, _ ->
+                val query = input.text?.toString()?.trim().orEmpty()
+                if (query.isBlank()) {
+                    showOverlayMessage("请输入搜索关键词")
+                } else {
+                    currentSearchQuery = query
+                    openScreen(Screen.SEARCH)
+                }
+            }
+            .show()
+    }
+
+    private fun navigateBack() {
+        when (currentScreen) {
+            Screen.HOME -> finish()
+            Screen.SEARCH -> openScreen(Screen.HOME)
+            else -> openScreen(Screen.HOME)
+        }
+    }
+
+    private fun openDetail(card: AnimeCard) {
+        openDetail(card.animeId)
+    }
+
+    private fun openDetail(animeId: Long) {
+        startActivity(DetailActivity.createIntent(this, animeId))
+    }
+
+    private fun launchPlayer(route: AgeRoute.Play) {
         startActivity(
             PlayerActivity.createIntent(
                 context = this,
                 animeId = route.animeId,
                 sourceIndex = route.sourceIndex,
                 episodeIndex = route.episodeIndex,
-                preferredSourceKey = preferredSourceKey,
-                resumePositionMs = resumePositionMs,
-                preferResumePrompt = preferResumePrompt,
             ),
         )
     }
 
-    private fun onRouteChanged(url: String?) {
-        val route = AgeLinks.parseCurrentUrl(url) ?: return
-        currentRoute = route
-        updateChromeForRoute(route, url)
-        if (route is AgeRoute.Play) {
-            val normalized = AgeLinks.buildWebUrl(route)
-            if (normalized != lastPlayLaunchUrl) {
-                launchPlayer(route)
-            }
-        } else {
-            lastPlayLaunchUrl = null
-        }
-    }
-
-    private fun updateChromeForRoute(route: AgeRoute, url: String? = AgeLinks.buildWebUrl(route)) {
-        val routePath = routePath(url)
-        binding.pageSubtitle.text = when (route) {
-            AgeRoute.Home -> "AGE 首页"
-            is AgeRoute.Detail -> "动画详情 #${route.animeId}"
-            is AgeRoute.Play -> "准备切换到原生播放器"
-            is AgeRoute.Search -> route.query?.let { "搜索：$it" } ?: "搜索页"
-            is AgeRoute.Web -> when {
-                routePath?.startsWith("/catalog") == true -> "目录页"
-                routePath?.startsWith("/recommend") == true -> "推荐页"
-                routePath?.startsWith("/update") == true -> "更新页"
-                routePath?.startsWith("/rank") == true -> "排行榜"
-                else -> route.url
-            }
-        }
-
-        val record = (route as? AgeRoute.Detail)?.let { app.playbackStore.getRecord(it.animeId) }
-        binding.continueButton.isVisible = record != null
-        binding.continueButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: getString(R.string.btn_continue)
-        updateBottomNavSelection(url)
-    }
-
-    private fun dispatchWebMove(direction: String, fallback: (() -> Unit)? = null) {
-        binding.webView.evaluateJavascript(WebFocusScripts.moveScript(direction)) { result ->
-            if (result == "false" || result == "null" || result.isNullOrBlank()) {
-                fallback?.invoke()
-            }
-        }
-    }
-
-    private fun focusBottomNav() {
-        currentBottomNavDestination()?.button?.requestFocus() ?: binding.navHomeButton.requestFocus()
-    }
-
-    private fun currentBottomNavDestination(): NavDestination? {
-        val path = routePath(binding.webView.url ?: AgeLinks.buildWebUrl(currentRoute)) ?: return null
-        return bottomNavDestinations().firstOrNull { it.matches(path) }
-    }
-
-    private fun updateBottomNavSelection(url: String?) {
-        val path = routePath(url)
-        bottomNavDestinations().forEach { destination ->
-            destination.button.isSelected = path?.let(destination.matches) == true
-        }
-    }
-
-    private fun bottomNavDestinations(): List<NavDestination> {
-        return listOf(
-            NavDestination(
-                button = binding.navHomeButton,
-                route = AgeRoute.Home,
-                matches = { path -> path == "/" || path.startsWith("/home") },
-            ),
-            NavDestination(
-                button = binding.navCatalogButton,
-                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}catalog"),
-                matches = { path -> path.startsWith("/catalog") },
-            ),
-            NavDestination(
-                button = binding.navRecommendButton,
-                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}recommend"),
-                matches = { path -> path.startsWith("/recommend") },
-            ),
-            NavDestination(
-                button = binding.navUpdateButton,
-                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}update"),
-                matches = { path -> path.startsWith("/update") },
-            ),
-            NavDestination(
-                button = binding.navRankButton,
-                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}rank"),
-                matches = { path -> path.startsWith("/rank") },
+    private fun launchPlayerForRecord(record: PlaybackRecord) {
+        startActivity(
+            PlayerActivity.createIntent(
+                context = this,
+                animeId = record.animeId,
+                sourceIndex = 1,
+                episodeIndex = record.episodeIndex + 1,
+                preferredSourceKey = record.sourceKey,
+                resumePositionMs = record.positionMs,
+                preferResumePrompt = false,
             ),
         )
-    }
-
-    private fun routePath(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        val uri = Uri.parse(url)
-        val rawPath = uri.fragment ?: uri.encodedPath ?: return null
-        val normalized = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
-        return normalized.substringBefore("?")
     }
 
     private fun showOverlayMessage(message: String) {
@@ -392,25 +632,76 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun navigateBackInWeb() {
-        when {
-            binding.webView.canGoBack() -> binding.webView.goBack()
-            currentRoute != AgeRoute.Home -> loadRoute(AgeRoute.Home)
-            else -> finish()
+    private fun recordToCard(record: PlaybackRecord): AnimeCard {
+        return AnimeCard(
+            animeId = record.animeId,
+            title = record.animeTitle,
+            cover = app.ageRepository.buildCoverUrl(record.animeId),
+            badge = record.episodeLabel,
+            subtitle = "看到 ${formatPlaybackTime(record.positionMs)}",
+        )
+    }
+
+    private fun todayWeekdayPrefix(): String {
+        return when (Calendar.getInstance().get(Calendar.DAY_OF_WEEK)) {
+            Calendar.MONDAY -> "周一"
+            Calendar.TUESDAY -> "周二"
+            Calendar.WEDNESDAY -> "周三"
+            Calendar.THURSDAY -> "周四"
+            Calendar.FRIDAY -> "周五"
+            Calendar.SATURDAY -> "周六"
+            else -> "周日"
         }
     }
 
-    inner class WebBridge {
-        @JavascriptInterface
-        fun onRouteChanged(url: String) {
-            runOnUiThread { this@MainActivity.onRouteChanged(url) }
-        }
+    private fun labelFor(options: List<FilterOption>, value: String): String {
+        return options.firstOrNull { it.value == value }?.label ?: "全部"
     }
 
     companion object {
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
 
-        private const val AGE_USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+        private val REGION_OPTIONS = listOf(
+            FilterOption("全部", "all"),
+            FilterOption("日本", "日本"),
+            FilterOption("中国", "中国"),
+            FilterOption("欧美", "欧美"),
+        )
+
+        private val GENRE_OPTIONS = listOf(
+            FilterOption("全部", "all"),
+            FilterOption("TV", "TV"),
+            FilterOption("剧场版", "剧场版"),
+            FilterOption("OVA", "OVA"),
+        )
+
+        private val LABEL_OPTIONS = listOf(
+            FilterOption("全部", "all"),
+            FilterOption("热血", "热血"),
+            FilterOption("战斗", "战斗"),
+            FilterOption("恋爱", "恋爱"),
+            FilterOption("校园", "校园"),
+            FilterOption("奇幻", "奇幻"),
+            FilterOption("科幻", "科幻"),
+            FilterOption("冒险", "冒险"),
+            FilterOption("机战", "机战"),
+            FilterOption("搞笑", "搞笑"),
+            FilterOption("悬疑", "悬疑"),
+            FilterOption("百合", "百合"),
+        )
+
+        private val ORDER_OPTIONS = listOf(
+            FilterOption("更新时间", "time"),
+            FilterOption("名称", "name"),
+            FilterOption("点击量", "hits"),
+        )
+
+        private val YEAR_OPTIONS: List<FilterOption> = buildList {
+            add(FilterOption("全部", "all"))
+            for (year in Calendar.getInstance().get(Calendar.YEAR) downTo 2000) {
+                add(FilterOption(year.toString(), year.toString()))
+            }
+            add(FilterOption("2000以前", "2000"))
+        }
     }
 }

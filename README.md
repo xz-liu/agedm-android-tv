@@ -3,7 +3,7 @@
 一个面向 Google TV / Android TV 的 AGE DM 客户端。
 
 这个项目不是通用浏览器壳。当前实现遵循两个原则：
-- 浏览尽量复用 AGE DM 网页
+- 浏览直接使用原生 TV 界面
 - 播放切到原生播放器，按 TV 遥控器习惯操作
 
 参考站点：
@@ -14,10 +14,11 @@
 ## 当前状态
 
 当前仓库已经可以成功编译 `debug` APK，主要能力包括：
-- `WebView` 打开 AGE DM 首页并限制在 AGE 域名内导航
+- 原生 TV 首页、目录、推荐、更新、排行五个主标签页
+- 通过 AGE 官方接口获取首页、目录、更新、排行、搜索和详情数据
+- 原生详情页支持封面、简介、切源、选集、系列作品和相似推荐
 - 详情页命中播放路由后切到原生播放器
-- 通过 `https://api.agedm.io/v2/detail/{aid}` 获取作品、分集和播放源数据
-- 通过解析页提取真实视频流地址并交给 `Media3 ExoPlayer`
+- 通过 AGE 站点自己的解析页提取真实视频流地址并交给 `Media3 ExoPlayer`
 - 原生播放器支持播放/暂停、快进快退、倍速、选集、切源、自动下一集
 - 播放进度按动画和分集保存，并支持继续观看
 - 电视端生成二维码，手机在同一局域网内提交 AGE 链接后自动打开
@@ -30,7 +31,8 @@
 ## 现有架构
 
 主要入口：
-- [MainActivity.kt](/Users/theforce/Dropbox/Codebase/agedm-android-tv/app/src/main/java/io/agedm/tv/ui/MainActivity.kt)：主页、AGE 网页浏览、站内路由拦截、Web 焦点桥接
+- [MainActivity.kt](/Users/theforce/Dropbox/Codebase/agedm-android-tv/app/src/main/java/io/agedm/tv/ui/MainActivity.kt)：原生首页、目录、推荐、更新、排行、搜索和筛选
+- [DetailActivity.kt](/Users/theforce/Dropbox/Codebase/agedm-android-tv/app/src/main/java/io/agedm/tv/ui/DetailActivity.kt)：原生详情、切源、选集、相关推荐
 - [PlayerActivity.kt](/Users/theforce/Dropbox/Codebase/agedm-android-tv/app/src/main/java/io/agedm/tv/ui/PlayerActivity.kt)：原生播放器、选集、倍速、续播、自动下一集
 - [LinkCastActivity.kt](/Users/theforce/Dropbox/Codebase/agedm-android-tv/app/src/main/java/io/agedm/tv/ui/LinkCastActivity.kt)：扫码投送入口
 
@@ -111,18 +113,18 @@ apkanalyzer apk summary app/build/outputs/apk/debug/app-debug.apk
 
 ## 功能说明
 
-### Web 浏览
+### 原生浏览
 
-- 启动后默认打开 AGE 首页
-- 顶栏包含返回、首页、扫码传链接、继续观看
-- 只允许 AGE 域名相关页面
-- 外链默认拦截并给出提示
+- 启动后默认进入原生首页
+- 顶栏包含返回、首页、搜索、扫码传链接、继续观看
+- 底部主导航固定为：首页、目录、推荐、更新、排行
+- 目录页提供 TV 友好的筛选方式，不再依赖网页标签点击
 
 ### 原生播放器
 
-- 进入播放时不再依赖 AGE 网页播放器 UI
+- 浏览层和播放器完全脱钩，不再展示 AGE 网页播放器 UI
 - 使用 AGE 详情接口获取完整分集列表
-- 使用解析页中的 `Vurl` 作为真实流地址
+- 优先让 AGE 自带 parser 解析真实流地址，再交给原生播放器
 - 支持：
   - 播放 / 暂停
   - 左右 10 秒快进快退
@@ -151,7 +153,7 @@ apkanalyzer apk summary app/build/outputs/apk/debug/app-debug.apk
 
 当前仓库能编译，不代表已经在所有电视上完成稳定性验证。已知风险主要有：
 - 依赖 AGE 站点接口和解析页格式，站点改版后可能失效
-- 不同电视自带 `WebView` 版本差异较大，网页浏览体验可能不一致
+- 个别播放源仍然依赖 AGE parser 页的时序，真机上还需要继续扩大验证样本
 - 目前是 `debug` 包，不适合直接当发布版本分发
 - 还没有做正式图标、启动图、发布签名、崩溃上报和自动化测试
 - `compileSdk = 35` 当前使用的 Android Gradle Plugin 是 `8.5.2`，构建可过，但会有兼容性警告

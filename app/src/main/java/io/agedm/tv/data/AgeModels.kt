@@ -2,6 +2,13 @@ package io.agedm.tv.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
 
 @Serializable
 data class AgeDetailResponse(
@@ -73,6 +80,158 @@ data class EpisodeItem(
     val label: String,
     val token: String,
 )
+
+@Serializable
+data class AgeHomeResponse(
+    val latest: List<AgeRelatedItem> = emptyList(),
+    val recommend: List<AgeRelatedItem> = emptyList(),
+    @SerialName("week_list")
+    val weekList: Map<String, List<AgeScheduleItem>> = emptyMap(),
+)
+
+@Serializable
+data class AgeScheduleItem(
+    val id: Long = 0,
+    val wd: Int = 0,
+    val name: String = "",
+    val mtime: String = "",
+    @SerialName("namefornew")
+    val nameForNew: String = "",
+    @SerialName("isnew")
+    val isNew: Int = 0,
+)
+
+@Serializable
+data class AgePosterListResponse(
+    @Serializable(with = FlexibleIntSerializer::class)
+    val total: Int = 0,
+    val videos: List<AgeRelatedItem> = emptyList(),
+)
+
+@Serializable
+data class AgeCatalogResponse(
+    @Serializable(with = FlexibleIntSerializer::class)
+    val total: Int = 0,
+    val videos: List<AgeCatalogVideo> = emptyList(),
+)
+
+@Serializable
+data class AgeCatalogVideo(
+    val id: Long = 0,
+    val name: String = "",
+    @SerialName("uptodate")
+    val updateLabel: String = "",
+    val status: String = "",
+    @SerialName("play_time")
+    val playTime: String = "",
+    @SerialName("type")
+    val genreType: String = "",
+    @SerialName("name_original")
+    val originalName: String = "",
+    @SerialName("name_other")
+    val otherName: String = "",
+    val premiere: String = "",
+    val writer: String = "",
+    val tags: String = "",
+    val company: String = "",
+    val intro: String = "",
+    val cover: String = "",
+)
+
+@Serializable
+data class AgeSearchResponse(
+    val code: Int = 0,
+    val message: String = "",
+    val data: AgeSearchData = AgeSearchData(),
+)
+
+@Serializable
+data class AgeSearchData(
+    val videos: List<AgeCatalogVideo> = emptyList(),
+    @Serializable(with = FlexibleIntSerializer::class)
+    val total: Int = 0,
+    @SerialName("totalPage")
+    @Serializable(with = FlexibleIntSerializer::class)
+    val totalPage: Int = 0,
+)
+
+@Serializable
+data class AgeRankResponse(
+    @Serializable(with = FlexibleIntSerializer::class)
+    val total: Int = 0,
+    val year: String = "",
+    val rank: List<List<AgeRankItem>> = emptyList(),
+)
+
+@Serializable
+data class AgeRankItem(
+    @SerialName("NO")
+    @Serializable(with = FlexibleIntSerializer::class)
+    val order: Int = 0,
+    @SerialName("AID")
+    val animeId: Long = 0,
+    @SerialName("CCnt")
+    val countLabel: String = "",
+    @SerialName("Title")
+    val title: String = "",
+)
+
+data class BrowseSection(
+    val title: String,
+    val subtitle: String = "",
+    val items: List<AnimeCard>,
+)
+
+data class AnimeCard(
+    val animeId: Long,
+    val title: String,
+    val cover: String,
+    val badge: String = "",
+    val subtitle: String = "",
+    val description: String = "",
+)
+
+data class PagedCards(
+    val items: List<AnimeCard>,
+    val total: Int,
+    val page: Int,
+    val size: Int,
+)
+
+data class HomeFeed(
+    val latest: List<AnimeCard>,
+    val recommend: List<AnimeCard>,
+    val dailySections: List<BrowseSection>,
+)
+
+data class CatalogQuery(
+    val page: Int = 1,
+    val size: Int = 30,
+    val region: String = "all",
+    val genre: String = "all",
+    val label: String = "all",
+    val year: String = "all",
+    val season: String = "all",
+    val status: String = "all",
+    val resource: String = "all",
+    val letter: String = "all",
+    val order: String = "time",
+)
+
+object FlexibleIntSerializer : KSerializer<Int> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("FlexibleInt", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): Int {
+        val jsonDecoder = decoder as? JsonDecoder ?: return 0
+        val primitive = jsonDecoder.decodeJsonElement().toString().trim('"')
+        return primitive.toIntOrNull() ?: 0
+    }
+
+    override fun serialize(encoder: Encoder, value: Int) {
+        encoder.encodeInt(value)
+    }
+}
 
 data class ResolvedStream(
     val streamUrl: String,

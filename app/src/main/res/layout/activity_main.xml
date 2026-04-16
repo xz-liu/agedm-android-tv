@@ -20,7 +20,6 @@
             android:layout_width="wrap_content"
             android:layout_height="48dp"
             android:background="@drawable/bg_focusable_small"
-            android:nextFocusDown="@id/webView"
             android:text="@string/btn_back"
             android:textColor="@color/age_text" />
 
@@ -30,8 +29,16 @@
             android:layout_height="48dp"
             android:layout_marginStart="10dp"
             android:background="@drawable/bg_focusable_small"
-            android:nextFocusDown="@id/webView"
             android:text="@string/btn_home"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/searchButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_search"
             android:textColor="@color/age_text" />
 
         <Button
@@ -40,7 +47,6 @@
             android:layout_height="48dp"
             android:layout_marginStart="10dp"
             android:background="@drawable/bg_focusable_small"
-            android:nextFocusDown="@id/webView"
             android:text="@string/btn_cast"
             android:textColor="@color/age_text" />
 
@@ -50,7 +56,6 @@
             android:layout_height="48dp"
             android:layout_marginStart="10dp"
             android:background="@drawable/bg_focusable_small"
-            android:nextFocusDown="@id/webView"
             android:text="@string/btn_continue"
             android:textColor="@color/age_text"
             android:visibility="gone" />
@@ -66,9 +71,9 @@
                 android:id="@+id/pageTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/webview_title"
+                android:text="@string/app_name"
                 android:textColor="@color/age_text"
-                android:textSize="20sp"
+                android:textSize="24sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -76,11 +81,142 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Web 浏览 + 原生播放器"
+                android:text="@string/main_subtitle"
                 android:textColor="@color/age_text_muted"
                 android:textSize="13sp" />
         </LinearLayout>
     </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_panel_soft"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="10dp">
+
+        <Button
+            android:id="@+id/navHomeButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_home"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navCatalogButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_catalog"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navRecommendButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_recommend"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navUpdateButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_update"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navRankButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_rank"
+            android:textColor="@color/age_text" />
+    </LinearLayout>
+
+    <HorizontalScrollView
+        android:id="@+id/filterScroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_panel_soft"
+        android:padding="10dp"
+        android:scrollbars="none"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/filterPrimaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_focusable_small"
+                android:textColor="@color/age_text"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/filterSecondaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_focusable_small"
+                android:textColor="@color/age_text"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/filterTertiaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_focusable_small"
+                android:textColor="@color/age_text"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/filterQuaternaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_focusable_small"
+                android:textColor="@color/age_text"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/filterFifthButton"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_focusable_small"
+                android:textColor="@color/age_text"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/filterResetButton"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_focusable_small"
+                android:text="@string/btn_reset"
+                android:textColor="@color/age_text"
+                android:visibility="gone" />
+        </LinearLayout>
+    </HorizontalScrollView>
 
     <FrameLayout
         android:layout_width="match_parent"
@@ -88,13 +224,56 @@
         android:layout_marginTop="12dp"
         android:layout_weight="1">
 
-        <WebView
-            android:id="@+id/webView"
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/contentRecycler"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="@android:color/black"
-            android:focusable="true"
-            android:focusableInTouchMode="true" />
+            android:clipToPadding="false"
+            android:descendantFocusability="afterDescendants"
+            android:paddingBottom="12dp" />
+
+        <LinearLayout
+            android:id="@+id/loadingLayout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_panel_soft"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingStart="24dp"
+            android:paddingTop="18dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="18dp"
+            android:visibility="gone">
+
+            <ProgressBar
+                android:layout_width="40dp"
+                android:layout_height="40dp" />
+
+            <TextView
+                android:id="@+id/loadingText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/loading_text"
+                android:textColor="@color/age_text"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/emptyStateText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_panel_soft"
+            android:paddingStart="22dp"
+            android:paddingTop="14dp"
+            android:paddingEnd="22dp"
+            android:paddingBottom="14dp"
+            android:text="@string/empty_text"
+            android:textColor="@color/age_text_muted"
+            android:textSize="16sp"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/overlayMessage"
@@ -113,67 +292,42 @@
     </FrameLayout>
 
     <LinearLayout
-        android:id="@+id/bottomNav"
+        android:id="@+id/paginationBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:background="@drawable/bg_panel_soft"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="10dp">
+        android:padding="10dp"
+        android:visibility="gone">
 
         <Button
-            android:id="@+id/navHomeButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
+            android:id="@+id/prevPageButton"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
             android:background="@drawable/bg_focusable_small"
-            android:nextFocusUp="@id/webView"
-            android:text="@string/btn_home"
+            android:text="@string/btn_prev_page"
             android:textColor="@color/age_text" />
 
-        <Button
-            android:id="@+id/navCatalogButton"
+        <TextView
+            android:id="@+id/pageIndicator"
             android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
             android:layout_weight="1"
-            android:background="@drawable/bg_focusable_small"
-            android:nextFocusUp="@id/webView"
-            android:text="@string/btn_catalog"
-            android:textColor="@color/age_text" />
+            android:gravity="center"
+            android:textColor="@color/age_text"
+            android:textSize="15sp"
+            android:textStyle="bold" />
 
         <Button
-            android:id="@+id/navRecommendButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
+            android:id="@+id/nextPageButton"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
             android:background="@drawable/bg_focusable_small"
-            android:nextFocusUp="@id/webView"
-            android:text="@string/btn_recommend"
-            android:textColor="@color/age_text" />
-
-        <Button
-            android:id="@+id/navUpdateButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_focusable_small"
-            android:nextFocusUp="@id/webView"
-            android:text="@string/btn_update"
-            android:textColor="@color/age_text" />
-
-        <Button
-            android:id="@+id/navRankButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_focusable_small"
-            android:nextFocusUp="@id/webView"
-            android:text="@string/btn_rank"
+            android:text="@string/btn_next_page"
             android:textColor="@color/age_text" />
     </LinearLayout>
 

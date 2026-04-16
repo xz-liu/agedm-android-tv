@@ -28,6 +28,14 @@ class PlaybackStore(context: Context) {
     }
 
     @Synchronized
+    fun getRecentRecords(limit: Int = 20): List<PlaybackRecord> {
+        return readAll()
+            .values
+            .sortedByDescending { it.lastUpdatedEpochMs }
+            .take(limit)
+    }
+
+    @Synchronized
     fun isAutoNextEnabled(): Boolean {
         return prefs.getBoolean(KEY_AUTO_NEXT, true)
     }
