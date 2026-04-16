@@ -57,25 +57,6 @@ object WebFocusScripts {
             return normalizeText(el.innerText || el.textContent || '');
           }
 
-          function promoContainerOf(node) {
-            var el = node;
-            while (el && el !== document.body) {
-              var text = visibleText(el);
-              if (
-                text.indexOf('今天不再显示') > -1 ||
-                text.indexOf('强烈建议下载APP') > -1 ||
-                text.indexOf('age.tv') > -1 ||
-                text.indexOf('agefans.com') > -1 ||
-                text.indexOf('Android客户端') > -1 ||
-                text.indexOf('iOS客户端') > -1
-              ) {
-                return el;
-              }
-              el = el.parentElement;
-            }
-            return null;
-          }
-
           function clickElement(el) {
             if (!el) return false;
             try {
@@ -95,54 +76,50 @@ object WebFocusScripts {
             return true;
           }
 
-          function hidePromo(container) {
-            if (!container) return false;
-            container.style.setProperty('display', 'none', 'important');
-            container.style.setProperty('visibility', 'hidden', 'important');
-            container.setAttribute('aria-hidden', 'true');
+          function hideElement(el) {
+            if (!el) return false;
+            el.style.setProperty('display', 'none', 'important');
+            el.style.setProperty('visibility', 'hidden', 'important');
+            el.setAttribute('aria-hidden', 'true');
             return true;
           }
 
           function dismissPromoDialog() {
-            var closeTargets = Array.prototype.slice.call(
-              document.querySelectorAll('button, a, span, div')
-            ).filter(visible);
+            var dialog = document.querySelector('.age-update-dialog');
+            if (!dialog || !visible(dialog)) return false;
 
-            var preferred = closeTargets.find(function(el) {
-              return visibleText(el).indexOf('今天不再显示') > -1 && promoContainerOf(el);
-            });
+            var dialogText = visibleText(dialog);
+            var looksLikePromo =
+              dialogText.indexOf('今天不再显示') > -1 &&
+              (
+                dialogText.indexOf('强烈建议下载APP') > -1 ||
+                dialogText.indexOf('age.tv') > -1 ||
+                dialogText.indexOf('agefans.com') > -1
+              );
 
-            if (preferred) {
-              clickElement(preferred);
-              var promo = promoContainerOf(preferred);
-              if (promo) {
-                setTimeout(function() { hidePromo(promo); }, 60);
-              }
+            if (!looksLikePromo) return false;
+
+            var closeButton = dialog.querySelector('.van-dialog__confirm');
+            if (closeButton && visible(closeButton)) {
+              clickElement(closeButton);
+              setTimeout(function() {
+                if (document.contains(dialog) && visible(dialog)) {
+                  hideElement(dialog);
+                  var overlay = document.querySelector('.van-overlay');
+                  if (overlay && visible(overlay)) {
+                    hideElement(overlay);
+                  }
+                }
+              }, 120);
               return true;
             }
 
-            var fallback = closeTargets.find(function(el) {
-              var text = visibleText(el);
-              if (text !== '关闭' && text.indexOf('关闭') === -1) return false;
-              return !!promoContainerOf(el);
-            });
-
-            if (fallback) {
-              clickElement(fallback);
-              var fallbackPromo = promoContainerOf(fallback);
-              if (fallbackPromo) {
-                setTimeout(function() { hidePromo(fallbackPromo); }, 60);
-              }
-              return true;
+            hideElement(dialog);
+            var fallbackOverlay = document.querySelector('.van-overlay');
+            if (fallbackOverlay && visible(fallbackOverlay)) {
+              hideElement(fallbackOverlay);
             }
-
-            var overlays = Array.prototype.slice.call(document.querySelectorAll('.van-dialog, .van-overlay, [role="dialog"]'));
-            var promoOverlay = overlays.find(function(el) { return !!promoContainerOf(el); });
-            if (promoOverlay) {
-              return hidePromo(promoOverlay);
-            }
-
-            return false;
+            return true;
           }
 
           function mark(el) {
