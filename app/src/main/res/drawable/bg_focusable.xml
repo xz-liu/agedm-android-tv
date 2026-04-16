@@ -2,16 +2,19 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_selected="true">
         <shape android:shape="rectangle">
-            <solid android:color="@color/age_focus" />
+            <solid android:color="#184536" />
+            <stroke
+                android:width="2dp"
+                android:color="#A8FFE8" />
             <corners android:radius="12dp" />
         </shape>
     </item>
     <item android:state_focused="true">
         <shape android:shape="rectangle">
-            <solid android:color="@color/age_surface_alt" />
+            <solid android:color="#C0142A3E" />
             <stroke
-                android:width="2dp"
-                android:color="@color/age_focus" />
+                android:width="3dp"
+                android:color="#C9FFF0" />
             <corners android:radius="12dp" />
         </shape>
     </item>
@@ -25,4 +28,3 @@
         </shape>
     </item>
 </selector>
-

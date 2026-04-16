@@ -11,6 +11,7 @@
     <string name="btn_recommend">推荐</string>
     <string name="btn_update">更新</string>
     <string name="btn_rank">排行</string>
+    <string name="btn_history">记录</string>
     <string name="btn_reset">重置筛选</string>
     <string name="btn_prev_page">上一页</string>
     <string name="btn_next_page">下一页</string>

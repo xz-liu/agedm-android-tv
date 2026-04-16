@@ -118,24 +118,24 @@ data class AgeCatalogResponse(
 @Serializable
 data class AgeCatalogVideo(
     val id: Long = 0,
-    val name: String = "",
+    val name: String? = null,
     @SerialName("uptodate")
-    val updateLabel: String = "",
-    val status: String = "",
+    val updateLabel: String? = null,
+    val status: String? = null,
     @SerialName("play_time")
-    val playTime: String = "",
+    val playTime: String? = null,
     @SerialName("type")
-    val genreType: String = "",
+    val genreType: String? = null,
     @SerialName("name_original")
-    val originalName: String = "",
+    val originalName: String? = null,
     @SerialName("name_other")
-    val otherName: String = "",
-    val premiere: String = "",
-    val writer: String = "",
-    val tags: String = "",
-    val company: String = "",
-    val intro: String = "",
-    val cover: String = "",
+    val otherName: String? = null,
+    val premiere: String? = null,
+    val writer: String? = null,
+    val tags: String? = null,
+    val company: String? = null,
+    val intro: String? = null,
+    val cover: String? = null,
 )
 
 @Serializable

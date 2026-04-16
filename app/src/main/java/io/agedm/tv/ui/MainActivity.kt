@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
         RECOMMEND,
         UPDATE,
         RANK,
+        HISTORY,
         SEARCH,
     }
 
@@ -94,6 +95,14 @@ class MainActivity : AppCompatActivity() {
         handleIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        updateContinueButton()
+        if (currentScreen == Screen.HISTORY) {
+            loadHistory()
+        }
+    }
+
     private fun setupRecycler() {
         sectionAdapter = BrowseSectionAdapter(::openDetail)
         gridAdapter = PosterCardAdapter(::openDetail)
@@ -130,6 +139,7 @@ class MainActivity : AppCompatActivity() {
         binding.navRecommendButton.setOnClickListener { openScreen(Screen.RECOMMEND) }
         binding.navUpdateButton.setOnClickListener { openScreen(Screen.UPDATE) }
         binding.navRankButton.setOnClickListener { openScreen(Screen.RANK) }
+        binding.navHistoryButton.setOnClickListener { openScreen(Screen.HISTORY) }
         updateBottomNav()
     }
 
@@ -177,6 +187,7 @@ class MainActivity : AppCompatActivity() {
                 route.url.contains("/recommend") -> openScreen(Screen.RECOMMEND)
                 route.url.contains("/update") -> openScreen(Screen.UPDATE)
                 route.url.contains("/rank") -> openScreen(Screen.RANK)
+                route.url.contains("/history") -> openScreen(Screen.HISTORY)
                 else -> openScreen(Screen.HOME)
             }
         }
@@ -198,6 +209,7 @@ class MainActivity : AppCompatActivity() {
             Screen.RECOMMEND -> loadRecommend()
             Screen.UPDATE -> loadUpdate(page)
             Screen.RANK -> loadRank()
+            Screen.HISTORY -> loadHistory()
             Screen.SEARCH -> loadSearch(page)
         }
     }
@@ -211,19 +223,20 @@ class MainActivity : AppCompatActivity() {
             runCatching {
                 val feed = app.ageRepository.fetchHomeFeed()
                 buildList {
-                    val recent = app.playbackStore.getRecentRecords(8).map(::recordToCard)
-                    if (recent.isNotEmpty()) {
-                        add(BrowseSection("继续观看", "按最近观看时间排序", recent))
-                    }
-                    feed.dailySections.firstOrNull { it.title.startsWith(todayWeekdayPrefix()) }?.let {
-                        add(BrowseSection("今日更新", it.subtitle, it.items))
-                    }
+                    val todaySection = feed.dailySections.firstOrNull { it.title.startsWith(todayWeekdayPrefix()) }
+                    todaySection?.let { add(BrowseSection("今日更新", it.subtitle, it.items.take(12))) }
                     add(BrowseSection("最近更新", "AGE 首页最新上架", feed.latest.take(12)))
                     add(BrowseSection("每日推荐", "站内推荐作品", feed.recommend.take(12)))
+                    addAll(
+                        feed.dailySections
+                            .filterNot { it.title.startsWith(todayWeekdayPrefix()) }
+                            .take(4)
+                            .map { it.copy(items = it.items.take(12)) },
+                    )
                 }
             }.onSuccess { sections ->
                 binding.pageTitle.text = getString(R.string.app_name)
-                binding.pageSubtitle.text = "推荐、更新与继续观看"
+                binding.pageSubtitle.text = "推荐、更新与每日追番"
                 showSections(sections, emptyMessage = "首页暂时没有内容")
             }.onFailure { error ->
                 showError("首页加载失败：${error.message.orEmpty()}")
@@ -318,6 +331,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun loadHistory() {
+        renderLoading("正在读取观看记录...")
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            val history = app.playbackStore.getRecentRecords(60).map(::recordToCard)
+            currentTotal = history.size
+            currentPageSize = history.size.coerceAtLeast(1)
+            binding.pageTitle.text = "记录"
+            binding.pageSubtitle.text = "最近观看与续播历史"
+            showGrid(history, emptyMessage = "还没有播放记录")
+        }
+    }
+
     private fun loadSearch(page: Int) {
         val query = currentSearchQuery?.trim().orEmpty()
         if (query.isBlank()) {
@@ -358,7 +386,7 @@ class MainActivity : AppCompatActivity() {
     private fun showGrid(items: List<AnimeCard>, emptyMessage: String) {
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
-        binding.contentRecycler.layoutManager = GridLayoutManager(this, 5)
+        binding.contentRecycler.layoutManager = GridLayoutManager(this, 6)
         binding.contentRecycler.adapter = gridAdapter
         gridAdapter.submitList(items)
         binding.emptyStateText.isVisible = items.isEmpty()
@@ -392,6 +420,7 @@ class MainActivity : AppCompatActivity() {
         binding.navRecommendButton.isSelected = currentScreen == Screen.RECOMMEND
         binding.navUpdateButton.isSelected = currentScreen == Screen.UPDATE
         binding.navRankButton.isSelected = currentScreen == Screen.RANK
+        binding.navHistoryButton.isSelected = currentScreen == Screen.HISTORY
     }
 
     private fun updatePagination(visible: Boolean) {
@@ -524,6 +553,7 @@ class MainActivity : AppCompatActivity() {
             binding.navRecommendButton,
             binding.navUpdateButton,
             binding.navRankButton,
+            binding.navHistoryButton,
         ).forEach { button ->
             button.nextFocusDownId = firstFilter?.id ?: binding.contentRecycler.id
         }
@@ -541,6 +571,7 @@ class MainActivity : AppCompatActivity() {
             Screen.RECOMMEND -> binding.navRecommendButton
             Screen.UPDATE -> binding.navUpdateButton
             Screen.RANK -> binding.navRankButton
+            Screen.HISTORY -> binding.navHistoryButton
             Screen.SEARCH -> binding.navHomeButton
         }
     }
@@ -585,6 +616,7 @@ class MainActivity : AppCompatActivity() {
         when (currentScreen) {
             Screen.HOME -> finish()
             Screen.SEARCH -> openScreen(Screen.HOME)
+            Screen.HISTORY -> openScreen(Screen.HOME)
             else -> openScreen(Screen.HOME)
         }
     }

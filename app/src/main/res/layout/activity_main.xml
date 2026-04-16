@@ -4,7 +4,7 @@
     android:layout_height="match_parent"
     android:background="@color/age_bg"
     android:orientation="vertical"
-    android:padding="16dp">
+    android:padding="10dp">
 
     <LinearLayout
         android:id="@+id/topBar"
@@ -13,57 +13,62 @@
         android:background="@drawable/bg_panel_soft"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="12dp">
+        android:padding="8dp">
 
         <Button
             android:id="@+id/backButton"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
+            android:layout_height="40dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_back"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/homeButton"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginStart="10dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_home"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/searchButton"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginStart="10dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_search"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/castButton"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginStart="10dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_cast"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/continueButton"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginStart="10dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_continue"
             android:textColor="@color/age_text"
+            android:textSize="13sp"
             android:visibility="gone" />
 
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="16dp"
+            android:layout_marginStart="12dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
@@ -73,7 +78,7 @@
                 android:layout_height="wrap_content"
                 android:text="@string/app_name"
                 android:textColor="@color/age_text"
-                android:textSize="24sp"
+                android:textSize="20sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -83,7 +88,7 @@
                 android:layout_marginTop="4dp"
                 android:text="@string/main_subtitle"
                 android:textColor="@color/age_text_muted"
-                android:textSize="13sp" />
+                android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 
@@ -91,69 +96,85 @@
         android:id="@+id/bottomNav"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:background="@drawable/bg_panel_soft"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="10dp">
+        android:padding="8dp">
 
         <Button
             android:id="@+id/navHomeButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="42dp"
             android:layout_weight="1"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_home"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/navCatalogButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_catalog"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/navRecommendButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_recommend"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/navUpdateButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_update"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/navRankButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_rank"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/navHistoryButton"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_history"
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
     </LinearLayout>
 
     <HorizontalScrollView
         android:id="@+id/filterScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:background="@drawable/bg_panel_soft"
-        android:padding="10dp"
+        android:padding="8dp"
         android:scrollbars="none"
         android:visibility="gone">
 
@@ -165,55 +186,61 @@
             <Button
                 android:id="@+id/filterPrimaryButton"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
+                android:layout_height="38dp"
                 android:background="@drawable/bg_focusable_small"
                 android:textColor="@color/age_text"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <Button
                 android:id="@+id/filterSecondaryButton"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_focusable_small"
                 android:textColor="@color/age_text"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <Button
                 android:id="@+id/filterTertiaryButton"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_focusable_small"
                 android:textColor="@color/age_text"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <Button
                 android:id="@+id/filterQuaternaryButton"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_focusable_small"
                 android:textColor="@color/age_text"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <Button
                 android:id="@+id/filterFifthButton"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_focusable_small"
                 android:textColor="@color/age_text"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <Button
                 android:id="@+id/filterResetButton"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_focusable_small"
                 android:text="@string/btn_reset"
                 android:textColor="@color/age_text"
+                android:textSize="13sp"
                 android:visibility="gone" />
         </LinearLayout>
     </HorizontalScrollView>
@@ -221,7 +248,7 @@
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:layout_weight="1">
 
         <androidx.recyclerview.widget.RecyclerView
@@ -295,20 +322,21 @@
         android:id="@+id/paginationBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:background="@drawable/bg_panel_soft"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="10dp"
+        android:padding="8dp"
         android:visibility="gone">
 
         <Button
             android:id="@+id/prevPageButton"
             android:layout_width="wrap_content"
-            android:layout_height="44dp"
+            android:layout_height="40dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_prev_page"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
 
         <TextView
             android:id="@+id/pageIndicator"
@@ -319,16 +347,17 @@
             android:layout_weight="1"
             android:gravity="center"
             android:textColor="@color/age_text"
-            android:textSize="15sp"
+            android:textSize="14sp"
             android:textStyle="bold" />
 
         <Button
             android:id="@+id/nextPageButton"
             android:layout_width="wrap_content"
-            android:layout_height="44dp"
+            android:layout_height="40dp"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_next_page"
-            android:textColor="@color/age_text" />
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
     </LinearLayout>
 
 </LinearLayout>

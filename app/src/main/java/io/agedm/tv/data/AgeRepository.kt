@@ -290,17 +290,19 @@ class AgeRepository(
 
     private fun AgeCatalogVideo.toAnimeCard(): AnimeCard {
         val subtitleParts = buildList {
-            if (premiere.isNotBlank()) add(premiere)
-            if (genreType.isNotBlank()) add(genreType)
-            if (status.isNotBlank()) add(status)
+            premiere?.takeIf { it.isNotBlank() }?.let(::add)
+            genreType?.takeIf { it.isNotBlank() }?.let(::add)
+            status?.takeIf { it.isNotBlank() }?.let(::add)
         }
         return AnimeCard(
             animeId = id,
-            title = name,
-            cover = cover,
-            badge = updateLabel,
+            title = name.orEmpty().ifBlank { "未命名动画" },
+            cover = cover.orEmpty().ifBlank { buildCoverUrl(id) },
+            badge = updateLabel.orEmpty(),
             subtitle = subtitleParts.joinToString(" · "),
-            description = tags.ifBlank { writer.ifBlank { company } },
+            description = tags.orEmpty()
+                .ifBlank { writer.orEmpty() }
+                .ifBlank { company.orEmpty() },
         )
     }
 

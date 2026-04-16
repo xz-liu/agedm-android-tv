@@ -3,14 +3,14 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:paddingBottom="20dp">
+    android:paddingBottom="14dp">
 
     <TextView
         android:id="@+id/sectionTitle"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textColor="@color/age_text"
-        android:textSize="21sp"
+        android:textSize="18sp"
         android:textStyle="bold" />
 
     <TextView
@@ -19,13 +19,13 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:textColor="@color/age_text_muted"
-        android:textSize="13sp"
+        android:textSize="12sp"
         android:visibility="gone" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/itemsRecycler"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:clipToPadding="false" />
 </LinearLayout>

@@ -94,8 +94,10 @@ class PlayerActivity : AppCompatActivity() {
         setupBackBehavior()
 
         autoNextEnabled = app.playbackStore.isAutoNextEnabled()
+        playbackSpeed = app.playbackStore.getPlaybackSpeed()
         updateAutoNextButton()
-        binding.speedButton.text = "倍速 1.0x"
+        updateSpeedButton()
+        updateProgressUi()
         showControls()
         loadDetail()
         startProgressLoop()
@@ -197,6 +199,7 @@ class PlayerActivity : AppCompatActivity() {
                             }
                             binding.loadingText.isVisible = false
                             updatePlayPauseButton()
+                            updateProgressUi()
                             if (autoHideAfterReady && !drawerVisible) {
                                 autoHideAfterReady = false
                                 hideControls()
@@ -211,6 +214,7 @@ class PlayerActivity : AppCompatActivity() {
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     updatePlayPauseButton()
+                    updateProgressUi()
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
@@ -505,6 +509,7 @@ class PlayerActivity : AppCompatActivity() {
         player.prepare()
         player.playWhenReady = true
         player.playbackParameters = PlaybackParameters(playbackSpeed)
+        updateProgressUi()
     }
 
     private fun tryAlternateSource(episodeIndex: Int, seekMs: Long): Boolean {
@@ -637,6 +642,15 @@ class PlayerActivity : AppCompatActivity() {
         binding.playPauseButton.text = if (player.isPlaying) "暂停" else "播放"
     }
 
+    private fun updateSpeedButton() {
+        val label = if (playbackSpeed % 1f == 0f) {
+            String.format("%.1f", playbackSpeed)
+        } else {
+            playbackSpeed.toString()
+        }
+        binding.speedButton.text = "倍速 ${label}x"
+    }
+
     private fun updateAutoNextButton() {
         binding.autoNextButton.text = if (autoNextEnabled) "自动下一集：开" else "自动下一集：关"
     }
@@ -659,7 +673,8 @@ class PlayerActivity : AppCompatActivity() {
             .setSingleChoiceItems(labels, currentIndex) { dialog, which ->
                 playbackSpeed = values[which]
                 player.playbackParameters = PlaybackParameters(playbackSpeed)
-                binding.speedButton.text = "倍速 ${labels[which]}"
+                app.playbackStore.setPlaybackSpeed(playbackSpeed)
+                updateSpeedButton()
                 dialog.dismiss()
             }
             .show()
@@ -669,6 +684,7 @@ class PlayerActivity : AppCompatActivity() {
         val duration = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
         val target = (player.currentPosition + deltaMs).coerceIn(0L, duration)
         player.seekTo(target)
+        updateProgressUi()
         binding.loadingText.isVisible = true
         binding.loadingText.text = if (deltaMs > 0) "快进到 ${formatPlaybackTime(target)}" else "快退到 ${formatPlaybackTime(target)}"
         lifecycleScope.launch {
@@ -734,11 +750,28 @@ class PlayerActivity : AppCompatActivity() {
     private fun startProgressLoop() {
         progressJob?.cancel()
         progressJob = lifecycleScope.launch {
+            var persistTicker = 0
             while (true) {
-                delay(5_000L)
-                persistCurrentProgress()
+                delay(1_000L)
+                updateProgressUi()
+                persistTicker += 1
+                if (persistTicker >= 5) {
+                    persistCurrentProgress()
+                    persistTicker = 0
+                }
             }
         }
+    }
+
+    private fun updateProgressUi() {
+        val duration = player.duration.takeIf { it > 0L } ?: 0L
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val bufferedPosition = player.bufferedPosition.coerceAtLeast(position)
+        binding.currentTimeText.text = formatPlaybackTime(position)
+        binding.durationText.text = formatPlaybackTime(duration)
+        binding.progressTimeBar.setDuration(duration)
+        binding.progressTimeBar.setPosition(position)
+        binding.progressTimeBar.setBufferedPosition(bufferedPosition)
     }
 
     private fun persistCurrentProgress(completed: Boolean = false) {

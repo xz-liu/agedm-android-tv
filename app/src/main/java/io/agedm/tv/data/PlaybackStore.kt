@@ -45,6 +45,18 @@ class PlaybackStore(context: Context) {
         prefs.edit().putBoolean(KEY_AUTO_NEXT, enabled).apply()
     }
 
+    @Synchronized
+    fun getPlaybackSpeed(): Float {
+        return prefs.getFloat(KEY_PLAYBACK_SPEED, 1f)
+            .takeIf { it > 0f }
+            ?: 1f
+    }
+
+    @Synchronized
+    fun setPlaybackSpeed(speed: Float) {
+        prefs.edit().putFloat(KEY_PLAYBACK_SPEED, speed).apply()
+    }
+
     private fun readAll(): MutableMap<Long, PlaybackRecord> {
         val raw = prefs.getString(KEY_RECORDS, null).orEmpty()
         if (raw.isBlank()) return mutableMapOf()
@@ -66,5 +78,6 @@ class PlaybackStore(context: Context) {
         private const val PREFS_NAME = "age_dm_tv"
         private const val KEY_RECORDS = "playback_records"
         private const val KEY_AUTO_NEXT = "auto_next"
+        private const val KEY_PLAYBACK_SPEED = "playback_speed"
     }
 }
