@@ -7,6 +7,10 @@
 /.DS_Store
 app/build/
 
+# Signing secrets — never commit these
+keystore.properties
+app/agedm-release.jks
+
 # Checked-in fallback APKs for GitHub release uploads
 !release-assets/
 !release-assets/*.apk
