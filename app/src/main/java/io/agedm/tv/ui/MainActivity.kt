@@ -103,6 +103,10 @@ class MainActivity : AppCompatActivity() {
         if (currentScreen == Screen.HISTORY) {
             loadHistory()
         }
+        app.linkCastManager.consumePendingRoute()?.let { route ->
+            showOverlayMessage("已收到手机投送：${AgeLinks.describe(route)}")
+            openRoute(route)
+        }
     }
 
     private fun setupRecycler() {
@@ -210,6 +214,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 app.linkCastManager.incomingRoutes.collectLatest { route ->
+                    app.linkCastManager.consumePendingRoute()
                     showOverlayMessage("已收到手机投送：${AgeLinks.describe(route)}")
                     openRoute(route)
                 }

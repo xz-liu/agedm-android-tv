@@ -11,8 +11,9 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.databinding.ActivityLinkCastBinding
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 
 class LinkCastActivity : AppCompatActivity() {
@@ -43,7 +44,7 @@ class LinkCastActivity : AppCompatActivity() {
                     }
                 }
                 launch {
-                    app.linkCastManager.incomingRoutes.collectLatest {
+                    app.linkCastManager.pendingRoute.filterNotNull().collectLatest {
                         delay(800L)
                         finish()
                     }

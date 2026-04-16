@@ -17,8 +17,17 @@ class LinkCastManager {
     private val _incomingRoutes = MutableSharedFlow<AgeRoute>(extraBufferCapacity = 8)
     val incomingRoutes = _incomingRoutes.asSharedFlow()
 
+    private val _pendingRoute = MutableStateFlow<AgeRoute?>(null)
+    val pendingRoute = _pendingRoute.asStateFlow()
+
     private val _status = MutableStateFlow("等待手机扫码后提交 AGE 链接")
     val status = _status.asStateFlow()
+
+    fun consumePendingRoute(): AgeRoute? {
+        val route = _pendingRoute.value
+        if (route != null) _pendingRoute.value = null
+        return route
+    }
 
     @Synchronized
     fun ensureStarted(): String? {
@@ -47,6 +56,7 @@ class LinkCastManager {
 
     private fun handleIncomingRoute(route: AgeRoute) {
         _status.value = "已收到：${AgeLinks.describe(route)}"
+        _pendingRoute.value = route
         _incomingRoutes.tryEmit(route)
     }
 
