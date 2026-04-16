@@ -2,9 +2,11 @@ package io.agedm.tv.ui
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
+import android.widget.Button
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -28,6 +30,12 @@ import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
+    private data class NavDestination(
+        val button: Button,
+        val route: AgeRoute,
+        val matches: (String) -> Boolean,
+    )
+
     private lateinit var binding: ActivityMainBinding
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -43,6 +51,7 @@ class MainActivity : AppCompatActivity() {
 
         setupChrome()
         setupWebView()
+        setupBottomNav()
         collectIncomingRoutes()
 
         if (savedInstanceState != null) {
@@ -99,7 +108,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    dispatchWebMove("down")
+                    dispatchWebMove("down") { focusBottomNav() }
                     return true
                 }
 
@@ -151,6 +160,15 @@ class MainActivity : AppCompatActivity() {
                 preferResumePrompt = false,
             )
         }
+    }
+
+    private fun setupBottomNav() {
+        bottomNavDestinations().forEach { destination ->
+            destination.button.setOnClickListener {
+                loadRoute(destination.route)
+            }
+        }
+        updateBottomNavSelection(AgeLinks.buildWebUrl(currentRoute))
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -229,8 +247,9 @@ class MainActivity : AppCompatActivity() {
     private fun loadRoute(route: AgeRoute) {
         currentRoute = route
         lastPlayLaunchUrl = null
-        updateChromeForRoute(route)
-        binding.webView.loadUrl(AgeLinks.buildWebUrl(route))
+        val url = AgeLinks.buildWebUrl(route)
+        updateChromeForRoute(route, url)
+        binding.webView.loadUrl(url)
         binding.webView.requestFocus()
     }
 
@@ -264,7 +283,7 @@ class MainActivity : AppCompatActivity() {
     private fun onRouteChanged(url: String?) {
         val route = AgeLinks.parseCurrentUrl(url) ?: return
         currentRoute = route
-        updateChromeForRoute(route)
+        updateChromeForRoute(route, url)
         if (route is AgeRoute.Play) {
             val normalized = AgeLinks.buildWebUrl(route)
             if (normalized != lastPlayLaunchUrl) {
@@ -275,18 +294,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateChromeForRoute(route: AgeRoute) {
+    private fun updateChromeForRoute(route: AgeRoute, url: String? = AgeLinks.buildWebUrl(route)) {
+        val routePath = routePath(url)
         binding.pageSubtitle.text = when (route) {
             AgeRoute.Home -> "AGE 首页"
             is AgeRoute.Detail -> "动画详情 #${route.animeId}"
             is AgeRoute.Play -> "准备切换到原生播放器"
             is AgeRoute.Search -> route.query?.let { "搜索：$it" } ?: "搜索页"
-            is AgeRoute.Web -> route.url
+            is AgeRoute.Web -> when {
+                routePath?.startsWith("/catalog") == true -> "目录页"
+                routePath?.startsWith("/recommend") == true -> "推荐页"
+                routePath?.startsWith("/update") == true -> "更新页"
+                routePath?.startsWith("/rank") == true -> "排行榜"
+                else -> route.url
+            }
         }
 
         val record = (route as? AgeRoute.Detail)?.let { app.playbackStore.getRecord(it.animeId) }
         binding.continueButton.isVisible = record != null
         binding.continueButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: getString(R.string.btn_continue)
+        updateBottomNavSelection(url)
     }
 
     private fun dispatchWebMove(direction: String, fallback: (() -> Unit)? = null) {
@@ -295,6 +322,60 @@ class MainActivity : AppCompatActivity() {
                 fallback?.invoke()
             }
         }
+    }
+
+    private fun focusBottomNav() {
+        currentBottomNavDestination()?.button?.requestFocus() ?: binding.navHomeButton.requestFocus()
+    }
+
+    private fun currentBottomNavDestination(): NavDestination? {
+        val path = routePath(binding.webView.url ?: AgeLinks.buildWebUrl(currentRoute)) ?: return null
+        return bottomNavDestinations().firstOrNull { it.matches(path) }
+    }
+
+    private fun updateBottomNavSelection(url: String?) {
+        val path = routePath(url)
+        bottomNavDestinations().forEach { destination ->
+            destination.button.isSelected = path?.let(destination.matches) == true
+        }
+    }
+
+    private fun bottomNavDestinations(): List<NavDestination> {
+        return listOf(
+            NavDestination(
+                button = binding.navHomeButton,
+                route = AgeRoute.Home,
+                matches = { path -> path == "/" || path.startsWith("/home") },
+            ),
+            NavDestination(
+                button = binding.navCatalogButton,
+                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}catalog"),
+                matches = { path -> path.startsWith("/catalog") },
+            ),
+            NavDestination(
+                button = binding.navRecommendButton,
+                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}recommend"),
+                matches = { path -> path.startsWith("/recommend") },
+            ),
+            NavDestination(
+                button = binding.navUpdateButton,
+                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}update"),
+                matches = { path -> path.startsWith("/update") },
+            ),
+            NavDestination(
+                button = binding.navRankButton,
+                route = AgeRoute.Web("${AgeLinks.BASE_WEB_URL}rank"),
+                matches = { path -> path.startsWith("/rank") },
+            ),
+        )
+    }
+
+    private fun routePath(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val uri = Uri.parse(url)
+        val rawPath = uri.fragment ?: uri.encodedPath ?: return null
+        val normalized = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
+        return normalized.substringBefore("?")
     }
 
     private fun showOverlayMessage(message: String) {

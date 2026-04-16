@@ -112,5 +112,69 @@
             android:visibility="gone" />
     </FrameLayout>
 
-</LinearLayout>
+    <LinearLayout
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_panel_soft"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="10dp">
 
+        <Button
+            android:id="@+id/navHomeButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:nextFocusUp="@id/webView"
+            android:text="@string/btn_home"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navCatalogButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:nextFocusUp="@id/webView"
+            android:text="@string/btn_catalog"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navRecommendButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:nextFocusUp="@id/webView"
+            android:text="@string/btn_recommend"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navUpdateButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:nextFocusUp="@id/webView"
+            android:text="@string/btn_update"
+            android:textColor="@color/age_text" />
+
+        <Button
+            android:id="@+id/navRankButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:nextFocusUp="@id/webView"
+            android:text="@string/btn_rank"
+            android:textColor="@color/age_text" />
+    </LinearLayout>
+
+</LinearLayout>

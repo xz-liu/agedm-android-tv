@@ -10,7 +10,7 @@ object WebFocusScripts {
           window.__ageTvInstalled = true;
 
           var style = document.createElement('style');
-          style.textContent = '.__age_tv_focus{outline:4px solid #6ED9B8 !important; outline-offset:2px !important; border-radius:8px !important;}';
+          style.textContent = '.__age_tv_focus{outline:4px solid #6ED9B8 !important; outline-offset:2px !important; border-radius:8px !important;}.foot-container,.van-tabbar--fixed{display:none !important;}.body-container.foot-active{padding-bottom:0 !important;}';
           document.head.appendChild(style);
 
           var current = null;
@@ -74,6 +74,52 @@ object WebFocusScripts {
               }
             } catch (e) {}
             return true;
+          }
+
+          function matches(el, selector) {
+            if (!el || !selector) return false;
+            var fn = el.matches || el.webkitMatchesSelector || el.msMatchesSelector;
+            if (!fn) return false;
+            return fn.call(el, selector);
+          }
+
+          function activationTarget(el) {
+            if (!el) return null;
+
+            var directSelector = 'a[href],button,input,textarea,[role="button"],.van-button,.van-tab,.van-tabbar-item';
+            if (matches(el, directSelector)) {
+              return el;
+            }
+
+            var nested = Array.prototype.slice.call(
+              el.querySelectorAll(
+                [
+                  'a[href]',
+                  'button',
+                  'input',
+                  'textarea',
+                  '[role="button"]',
+                  '.van-button',
+                  '.van-cell__title a',
+                  '.van-grid-item__content a',
+                  '.video-item-title a',
+                  '.van-tab',
+                  '.van-tabbar-item'
+                ].join(',')
+              )
+            ).find(visible);
+            if (nested) {
+              return nested;
+            }
+
+            if (el.closest) {
+              var parentTarget = el.closest(directSelector);
+              if (parentTarget && visible(parentTarget)) {
+                return parentTarget;
+              }
+            }
+
+            return el;
           }
 
           function hideElement(el) {
@@ -207,10 +253,7 @@ object WebFocusScripts {
               if (!list.length) return false;
               ensureCurrent(list);
               if (!current) return false;
-              if (current.click) {
-                current.click();
-              }
-              return true;
+              return clickElement(activationTarget(current));
             }
           };
 
