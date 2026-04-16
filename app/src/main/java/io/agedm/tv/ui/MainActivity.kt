@@ -3,6 +3,7 @@ package io.agedm.tv.ui
 import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
+import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -82,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         setupChrome()
         setupBottomNav()
         setupBackBehavior()
+        setupTopBarAutoHide()
         collectIncomingRoutes()
 
         if (!handleIntent(intent)) {
@@ -147,6 +149,61 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this) {
             navigateBack()
         }
+    }
+
+    private fun setupTopBarAutoHide() {
+        window.decorView.viewTreeObserver.addOnGlobalFocusChangeListener { _, newFocus ->
+            if (binding.topBar.isVisible && newFocus != null && !isInTopBar(newFocus)) {
+                hideTopBar()
+            }
+        }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            val focused = currentFocus
+            if (focused != null && isNavButton(focused) && !binding.topBar.isVisible) {
+                showTopBar()
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun showTopBar() {
+        binding.topBar.visibility = View.VISIBLE
+        val navButtons = listOf(
+            binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
+            binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
+        )
+        navButtons.forEach { it.nextFocusUpId = binding.backButton.id }
+        binding.backButton.requestFocus()
+    }
+
+    private fun hideTopBar() {
+        binding.topBar.visibility = View.GONE
+        val navButtons = listOf(
+            binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
+            binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
+        )
+        navButtons.forEach { it.nextFocusUpId = View.NO_ID }
+    }
+
+    private fun isNavButton(view: View): Boolean {
+        return view == binding.navHomeButton ||
+            view == binding.navCatalogButton ||
+            view == binding.navRecommendButton ||
+            view == binding.navUpdateButton ||
+            view == binding.navRankButton ||
+            view == binding.navHistoryButton
+    }
+
+    private fun isInTopBar(view: View): Boolean {
+        return view == binding.backButton ||
+            view == binding.homeButton ||
+            view == binding.searchButton ||
+            view == binding.castButton ||
+            view == binding.continueButton
     }
 
     private fun collectIncomingRoutes() {

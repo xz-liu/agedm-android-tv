@@ -10,10 +10,10 @@
         android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_panel_soft"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="8dp">
+        android:padding="8dp"
+        android:visibility="gone">
 
         <Button
             android:id="@+id/backButton"
@@ -96,11 +96,10 @@
         android:id="@+id/bottomNav"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:background="@drawable/bg_panel_soft"
+        android:layout_marginTop="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="8dp">
+        android:padding="4dp">
 
         <Button
             android:id="@+id/navHomeButton"
@@ -172,9 +171,8 @@
         android:id="@+id/filterScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:background="@drawable/bg_panel_soft"
-        android:padding="8dp"
+        android:layout_marginTop="4dp"
+        android:padding="4dp"
         android:scrollbars="none"
         android:visibility="gone">
 
@@ -322,11 +320,10 @@
         android:id="@+id/paginationBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:background="@drawable/bg_panel_soft"
+        android:layout_marginTop="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="8dp"
+        android:padding="4dp"
         android:visibility="gone">
 
         <Button
