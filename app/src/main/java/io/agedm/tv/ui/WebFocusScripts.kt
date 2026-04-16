@@ -48,6 +48,103 @@ object WebFocusScripts {
             return Array.prototype.slice.call(document.querySelectorAll(selector)).filter(visible);
           }
 
+          function normalizeText(text) {
+            return String(text || '').replace(/\s+/g, '');
+          }
+
+          function visibleText(el) {
+            if (!el) return '';
+            return normalizeText(el.innerText || el.textContent || '');
+          }
+
+          function promoContainerOf(node) {
+            var el = node;
+            while (el && el !== document.body) {
+              var text = visibleText(el);
+              if (
+                text.indexOf('今天不再显示') > -1 ||
+                text.indexOf('强烈建议下载APP') > -1 ||
+                text.indexOf('age.tv') > -1 ||
+                text.indexOf('agefans.com') > -1 ||
+                text.indexOf('Android客户端') > -1 ||
+                text.indexOf('iOS客户端') > -1
+              ) {
+                return el;
+              }
+              el = el.parentElement;
+            }
+            return null;
+          }
+
+          function clickElement(el) {
+            if (!el) return false;
+            try {
+              ['mouseover', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
+                el.dispatchEvent(new MouseEvent(type, {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window
+                }));
+              });
+            } catch (e) {}
+            try {
+              if (typeof el.click === 'function') {
+                el.click();
+              }
+            } catch (e) {}
+            return true;
+          }
+
+          function hidePromo(container) {
+            if (!container) return false;
+            container.style.setProperty('display', 'none', 'important');
+            container.style.setProperty('visibility', 'hidden', 'important');
+            container.setAttribute('aria-hidden', 'true');
+            return true;
+          }
+
+          function dismissPromoDialog() {
+            var closeTargets = Array.prototype.slice.call(
+              document.querySelectorAll('button, a, span, div')
+            ).filter(visible);
+
+            var preferred = closeTargets.find(function(el) {
+              return visibleText(el).indexOf('今天不再显示') > -1 && promoContainerOf(el);
+            });
+
+            if (preferred) {
+              clickElement(preferred);
+              var promo = promoContainerOf(preferred);
+              if (promo) {
+                setTimeout(function() { hidePromo(promo); }, 60);
+              }
+              return true;
+            }
+
+            var fallback = closeTargets.find(function(el) {
+              var text = visibleText(el);
+              if (text !== '关闭' && text.indexOf('关闭') === -1) return false;
+              return !!promoContainerOf(el);
+            });
+
+            if (fallback) {
+              clickElement(fallback);
+              var fallbackPromo = promoContainerOf(fallback);
+              if (fallbackPromo) {
+                setTimeout(function() { hidePromo(fallbackPromo); }, 60);
+              }
+              return true;
+            }
+
+            var overlays = Array.prototype.slice.call(document.querySelectorAll('.van-dialog, .van-overlay, [role="dialog"]'));
+            var promoOverlay = overlays.find(function(el) { return !!promoContainerOf(el); });
+            if (promoOverlay) {
+              return hidePromo(promoOverlay);
+            }
+
+            return false;
+          }
+
           function mark(el) {
             if (current && current.classList) {
               current.classList.remove('__age_tv_focus');
@@ -169,6 +266,18 @@ object WebFocusScripts {
           document.addEventListener('DOMContentLoaded', function() {
             notifyRoute();
           });
+          var dismissObserver = new MutationObserver(function() {
+            dismissPromoDialog();
+          });
+          dismissObserver.observe(document.documentElement || document.body, {
+            childList: true,
+            subtree: true,
+            attributes: false
+          });
+          setInterval(dismissPromoDialog, 800);
+          setTimeout(dismissPromoDialog, 0);
+          setTimeout(dismissPromoDialog, 300);
+          setTimeout(dismissPromoDialog, 1000);
           setInterval(notifyRoute, 500);
           setTimeout(notifyRoute, 0);
         })();
@@ -180,4 +289,3 @@ object WebFocusScripts {
 
     const val ACTIVATE_SCRIPT = "window.AgeTvFocus && window.AgeTvFocus.activate();"
 }
-
