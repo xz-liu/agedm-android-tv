@@ -34,7 +34,14 @@ object WebFocusScripts {
             var style = window.getComputedStyle(el);
             if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
             var rect = el.getBoundingClientRect();
-            return rect.width > 12 && rect.height > 12;
+            var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+            var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+            return rect.width > 12 &&
+              rect.height > 12 &&
+              rect.bottom > 24 &&
+              rect.top < viewportHeight - 24 &&
+              rect.right > 24 &&
+              rect.left < viewportWidth - 24;
           }
 
           function center(rect) {

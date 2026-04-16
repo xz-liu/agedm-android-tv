@@ -13,6 +13,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity() {
         setupChrome()
         setupWebView()
         setupBottomNav()
+        setupBackBehavior()
         collectIncomingRoutes()
 
         if (savedInstanceState != null) {
@@ -131,11 +133,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupChrome() {
         binding.backButton.setOnClickListener {
-            when {
-                binding.webView.canGoBack() -> binding.webView.goBack()
-                currentRoute != AgeRoute.Home -> loadRoute(AgeRoute.Home)
-                else -> finish()
-            }
+            navigateBackInWeb()
         }
 
         binding.homeButton.setOnClickListener {
@@ -169,6 +167,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateBottomNavSelection(AgeLinks.buildWebUrl(currentRoute))
+    }
+
+    private fun setupBackBehavior() {
+        onBackPressedDispatcher.addCallback(this) {
+            navigateBackInWeb()
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -385,6 +389,14 @@ class MainActivity : AppCompatActivity() {
         overlayJob = lifecycleScope.launch {
             delay(2500)
             binding.overlayMessage.visibility = View.GONE
+        }
+    }
+
+    private fun navigateBackInWeb() {
+        when {
+            binding.webView.canGoBack() -> binding.webView.goBack()
+            currentRoute != AgeRoute.Home -> loadRoute(AgeRoute.Home)
+            else -> finish()
         }
     }
 

@@ -81,6 +81,8 @@ data class ResolvedStream(
     val sourceLabel: String,
     val episode: EpisodeItem,
     val isM3u8: Boolean,
+    val mimeType: String? = null,
+    val headers: Map<String, String> = emptyMap(),
 )
 
 @Serializable
@@ -97,4 +99,3 @@ data class PlaybackRecord(
     val lastUpdatedEpochMs: Long,
     val completed: Boolean = false,
 )
-

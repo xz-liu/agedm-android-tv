@@ -1,18 +1,28 @@
 package io.agedm.tv.ui
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.View
+import android.widget.FrameLayout
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
@@ -22,14 +32,27 @@ import io.agedm.tv.data.AnimeDetail
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.PlaybackRecord
+import io.agedm.tv.data.ResolvedStream
 import io.agedm.tv.databinding.ActivityPlayerBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
+import java.util.concurrent.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import org.json.JSONObject
 
 class PlayerActivity : AppCompatActivity() {
+
+    private data class ParserRequest(
+        val id: Int,
+        val parserUrl: String,
+        val source: EpisodeSource,
+        val episode: EpisodeItem,
+        val deferred: CompletableDeferred<ResolvedStream>,
+    )
 
     private lateinit var binding: ActivityPlayerBinding
     private val app: AgeTvApplication
@@ -38,6 +61,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var player: ExoPlayer
     private lateinit var sourceAdapter: SourceAdapter
     private lateinit var episodeAdapter: EpisodeAdapter
+    private var parserWebView: WebView? = null
 
     private var detail: AnimeDetail? = null
     private var currentSourceIndex: Int = 0
@@ -49,9 +73,14 @@ class PlayerActivity : AppCompatActivity() {
     private var autoNextEnabled: Boolean = true
     private var progressJob: Job? = null
     private var resolveJob: Job? = null
+    private var parserPollJob: Job? = null
     private var controlsVisible = false
     private var drawerVisible = false
     private var autoHideAfterReady = true
+    private var hasPlaybackStarted = false
+    private var parserRequestId = 0
+    private var parserRequest: ParserRequest? = null
+    private val attemptedSourceIndices = linkedSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,6 +88,7 @@ class PlayerActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         setupPlayer()
+        setupParserWebView()
         setupLists()
         setupButtons()
         setupBackBehavior()
@@ -79,7 +109,16 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         progressJob?.cancel()
         resolveJob?.cancel()
+        parserPollJob?.cancel()
+        parserRequest?.deferred?.cancel()
         persistCurrentProgress()
+        parserWebView?.apply {
+            stopLoading()
+            loadUrl("about:blank")
+            removeAllViews()
+            destroy()
+        }
+        parserWebView = null
         player.release()
         super.onDestroy()
     }
@@ -151,6 +190,7 @@ class PlayerActivity : AppCompatActivity() {
                         }
 
                         Player.STATE_READY -> {
+                            hasPlaybackStarted = true
                             if (deferredSeekMs > 0L) {
                                 player.seekTo(deferredSeekMs)
                                 deferredSeekMs = 0L
@@ -174,6 +214,11 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    if (!hasPlaybackStarted || player.currentPosition <= 2_000L) {
+                        if (tryAlternateSource(currentEpisodeIndex, deferredSeekMs.coerceAtLeast(player.currentPosition))) {
+                            return
+                        }
+                    }
                     binding.loadingText.isVisible = true
                     binding.loadingText.text = "播放失败：${error.errorCodeName}"
                     showControls()
@@ -182,6 +227,37 @@ class PlayerActivity : AppCompatActivity() {
         }
         binding.playerView.player = player
         binding.playerView.useController = false
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupParserWebView() {
+        parserWebView = WebView(this).apply {
+            visibility = View.INVISIBLE
+            alpha = 0f
+            layoutParams = FrameLayout.LayoutParams(1, 1)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.userAgentString = PLAYER_USER_AGENT
+            webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                ) = super.shouldInterceptRequest(view, request).also {
+                    val candidate = request?.url?.toString().orEmpty()
+                    if (looksLikePlayableMediaUrl(candidate)) {
+                        runOnUiThread { completeParserRequest(candidate) }
+                    }
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    val request = parserRequest ?: return
+                    startParserPolling(request.id)
+                }
+            }
+        }
+        binding.playerRoot.addView(parserWebView)
     }
 
     private fun setupLists() {
@@ -319,17 +395,28 @@ class PlayerActivity : AppCompatActivity() {
         return sourceIndex to episodeIndex
     }
 
-    private fun beginPlayback(sourceIndex: Int, episodeIndex: Int, seekMs: Long) {
+    private fun beginPlayback(
+        sourceIndex: Int,
+        episodeIndex: Int,
+        seekMs: Long,
+        resetAttempts: Boolean = true,
+    ) {
         val loadedDetail = detail ?: return
         val source = loadedDetail.sources.getOrNull(sourceIndex) ?: return
         val episode = source.episodes.getOrNull(episodeIndex) ?: return
 
+        if (resetAttempts) {
+            attemptedSourceIndices.clear()
+        }
+        attemptedSourceIndices += sourceIndex
         currentSourceIndex = sourceIndex
         currentEpisodeIndex = episodeIndex
         currentSource = source
         currentEpisode = episode
         deferredSeekMs = seekMs
         autoHideAfterReady = true
+        hasPlaybackStarted = false
+        player.stop()
 
         sourceAdapter.submitList(loadedDetail.sources, source.key)
         episodeAdapter.submitList(source.episodes, episode.index)
@@ -337,23 +424,204 @@ class PlayerActivity : AppCompatActivity() {
         scrollEpisodeIntoView()
 
         binding.loadingText.isVisible = true
-        binding.loadingText.text = "正在解析 ${episode.label}..."
+        binding.loadingText.text = "正在使用 AGE 解析 ${episode.label}..."
 
         resolveJob?.cancel()
         resolveJob = lifecycleScope.launch {
             try {
-                val stream = app.ageRepository.resolveStream(loadedDetail, source, episode)
-                player.setMediaItem(MediaItem.fromUri(stream.streamUrl))
-                player.prepare()
-                player.playWhenReady = true
-                player.playbackParameters = PlaybackParameters(playbackSpeed)
+                val stream = resolveStreamWithAgeParser(loadedDetail, source, episode)
+                playResolvedStream(stream)
                 updatePlayerInfo()
             } catch (error: Throwable) {
+                if (tryAlternateSource(episodeIndex, seekMs)) {
+                    return@launch
+                }
                 binding.loadingText.isVisible = true
                 binding.loadingText.text = "解析失败：${error.message.orEmpty()}"
                 showControls()
             }
         }
+    }
+
+    private suspend fun resolveStreamWithAgeParser(
+        detail: AnimeDetail,
+        source: EpisodeSource,
+        episode: EpisodeItem,
+    ): ResolvedStream {
+        val parserUrl = app.ageRepository.buildParserUrl(detail, source, episode)
+        val request = ParserRequest(
+            id = ++parserRequestId,
+            parserUrl = parserUrl,
+            source = source,
+            episode = episode,
+            deferred = CompletableDeferred(),
+        )
+
+        parserPollJob?.cancel()
+        parserRequest?.deferred?.cancel()
+        parserRequest = request
+
+        parserWebView?.stopLoading()
+        parserWebView?.loadUrl("about:blank")
+        parserWebView?.loadUrl(parserUrl)
+
+        return try {
+            withTimeout(PARSER_TIMEOUT_MS) {
+                request.deferred.await()
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            parserPollJob?.cancel()
+            parserRequest = null
+            app.ageRepository.resolveStream(detail, source, episode)
+        } finally {
+            parserWebView?.stopLoading()
+        }
+    }
+
+    private fun playResolvedStream(stream: ResolvedStream) {
+        val mediaItem = MediaItem.Builder()
+            .setUri(stream.streamUrl)
+            .apply {
+                val mimeType = stream.mimeType ?: if (stream.isM3u8) MimeTypes.APPLICATION_M3U8 else null
+                if (!mimeType.isNullOrBlank()) {
+                    setMimeType(mimeType)
+                }
+            }
+            .build()
+
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(stream.headers["User-Agent"] ?: PLAYER_USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(stream.headers)
+
+        val mediaSource = if (stream.isM3u8) {
+            HlsMediaSource.Factory(httpFactory).createMediaSource(mediaItem)
+        } else {
+            ProgressiveMediaSource.Factory(httpFactory).createMediaSource(mediaItem)
+        }
+
+        player.setMediaSource(mediaSource)
+        player.prepare()
+        player.playWhenReady = true
+        player.playbackParameters = PlaybackParameters(playbackSpeed)
+    }
+
+    private fun tryAlternateSource(episodeIndex: Int, seekMs: Long): Boolean {
+        val loadedDetail = detail ?: return false
+        val nextSourceIndex = loadedDetail.sources.indices.firstOrNull { index ->
+            index !in attemptedSourceIndices &&
+                episodeIndex in loadedDetail.sources[index].episodes.indices
+        } ?: return false
+
+        val nextSource = loadedDetail.sources[nextSourceIndex]
+        binding.loadingText.isVisible = true
+        binding.loadingText.text = "当前源失败，切换到 ${nextSource.label}..."
+        lifecycleScope.launch {
+            beginPlayback(
+                sourceIndex = nextSourceIndex,
+                episodeIndex = episodeIndex,
+                seekMs = seekMs,
+                resetAttempts = false,
+            )
+        }
+        return true
+    }
+
+    private fun startParserPolling(requestId: Int) {
+        parserPollJob?.cancel()
+        parserPollJob = lifecycleScope.launch {
+            repeat(PARSER_POLL_RETRY_COUNT) {
+                delay(PARSER_POLL_INTERVAL_MS)
+                val candidate = readParserMediaUrl() ?: return@repeat
+                if (completeParserRequest(candidate, requestId)) {
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun completeParserRequest(url: String, requestId: Int? = null): Boolean {
+        val activeRequest = parserRequest ?: return false
+        if (requestId != null && requestId != activeRequest.id) return false
+
+        val normalizedUrl = url.trim()
+            .replace("&amp;", "&")
+            .takeIf { it.startsWith("http://") || it.startsWith("https://") }
+            ?: return false
+
+        if (activeRequest.deferred.isCompleted || activeRequest.deferred.isCancelled) {
+            return false
+        }
+
+        val isM3u8 = normalizedUrl.contains(".m3u8", ignoreCase = true)
+        activeRequest.deferred.complete(
+            ResolvedStream(
+                streamUrl = normalizedUrl,
+                parserUrl = activeRequest.parserUrl,
+                sourceKey = activeRequest.source.key,
+                sourceLabel = activeRequest.source.label,
+                episode = activeRequest.episode,
+                isM3u8 = isM3u8,
+                mimeType = app.ageRepository.inferMimeType(normalizedUrl, isM3u8),
+                headers = app.ageRepository.buildPlaybackHeaders(activeRequest.parserUrl),
+            ),
+        )
+        parserRequest = null
+        parserPollJob?.cancel()
+        return true
+    }
+
+    private suspend fun readParserMediaUrl(): String? {
+        val webView = parserWebView ?: return null
+        val result = CompletableDeferred<String?>()
+        webView.evaluateJavascript(PARSER_PROBE_SCRIPT) { value ->
+            result.complete(decodeJavascriptValue(value))
+        }
+        return result.await()
+            ?.replace("&amp;", "&")
+            ?.trim()
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    }
+
+    private fun decodeJavascriptValue(rawValue: String?): String? {
+        if (rawValue.isNullOrBlank() || rawValue == "null") return null
+        return try {
+            JSONObject("""{"value":$rawValue}""").getString("value")
+        } catch (_: Throwable) {
+            rawValue.removePrefix("\"").removeSuffix("\"")
+                .replace("\\/", "/")
+                .replace("\\u0026", "&")
+        }.ifBlank { null }
+    }
+
+    private fun looksLikePlayableMediaUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
+        if (
+            lower.contains("artplayer") ||
+            lower.contains("hls.min.js") ||
+            lower.contains("flv.min.js") ||
+            lower.contains("global.min.js") ||
+            lower.contains("play.min.js") ||
+            lower.contains("adposter") ||
+            lower.endsWith(".js") ||
+            lower.endsWith(".css") ||
+            lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") ||
+            lower.endsWith(".png") ||
+            lower.endsWith(".gif") ||
+            lower.endsWith(".svg")
+        ) {
+            return false
+        }
+
+        return lower.contains(".m3u8") ||
+            lower.contains(".mp4") ||
+            lower.contains(".flv") ||
+            lower.contains(".m4s") ||
+            lower.contains("bilivideo.com/upgcxcode/") ||
+            lower.contains("akamaized.net/obj/")
     }
 
     private fun togglePlayPause() {
@@ -379,7 +647,7 @@ class PlayerActivity : AppCompatActivity() {
         val episode = currentEpisode ?: return
         binding.playerTitle.text = loadedDetail.title
         binding.playerSubtitle.text = "${source.label} · ${episode.label}"
-        binding.sourceSummary.text = "当前源：${source.label}"
+        binding.sourceSummary.text = "当前源：${source.label}（已尝试 ${attemptedSourceIndices.size} 个源）"
     }
 
     private fun openSpeedSelector() {
@@ -538,6 +806,40 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_SOURCE_KEY = "extra_source_key"
         private const val EXTRA_RESUME_POSITION_MS = "extra_resume_position_ms"
         private const val EXTRA_PREFER_RESUME_PROMPT = "extra_prefer_resume_prompt"
+        private const val PLAYER_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+        private const val PARSER_TIMEOUT_MS = 20_000L
+        private const val PARSER_POLL_INTERVAL_MS = 500L
+        private const val PARSER_POLL_RETRY_COUNT = 24
+        private const val PARSER_PROBE_SCRIPT =
+            """
+            (function() {
+              var values = [];
+              var video = document.querySelector('video');
+              if (video) {
+                values.push(video.currentSrc || '');
+                values.push(video.src || '');
+              }
+              var info = document.querySelector('[data-video="src"]');
+              if (info) {
+                values.push(info.textContent || '');
+              }
+              if (window.art && window.art.template && window.art.template.${'$'}video) {
+                values.push(window.art.template.${'$'}video.currentSrc || '');
+                values.push(window.art.template.${'$'}video.src || '');
+              }
+              if (window.art && window.art.option && window.art.option.url) {
+                values.push(window.art.option.url || '');
+              }
+              for (var i = 0; i < values.length; i++) {
+                var value = String(values[i] || '').trim();
+                if (value && /^https?:\/\//i.test(value) && value.indexOf('blob:') !== 0) {
+                  return value;
+                }
+              }
+              return '';
+            })();
+            """
 
         fun createIntent(
             context: Context,

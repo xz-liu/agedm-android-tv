@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -29,15 +30,12 @@ class AgeRepository(
         source: EpisodeSource,
         episode: EpisodeItem,
     ): ResolvedStream = withContext(Dispatchers.IO) {
-        val parserBase = if (source.isVipLike) detail.playerJx.vip else detail.playerJx.direct
-        if (parserBase.isBlank()) {
-            throw IOException("AGE 解析前缀为空")
-        }
-        val parserUrl = parserBase + episode.token
+        val parserUrl = buildParserUrl(detail, source, episode)
         val html = get(parserUrl)
         val resolvedUrl = streamPattern.find(html)?.groupValues?.getOrNull(1)
             ?.takeIf { it.isNotBlank() }
             ?: throw IOException("未能从解析页提取真实视频地址")
+        val isM3u8 = resolvedUrl.contains(".m3u8", ignoreCase = true)
 
         ResolvedStream(
             streamUrl = resolvedUrl,
@@ -45,8 +43,61 @@ class AgeRepository(
             sourceKey = source.key,
             sourceLabel = source.label,
             episode = episode,
-            isM3u8 = resolvedUrl.contains(".m3u8", ignoreCase = true),
+            isM3u8 = isM3u8,
+            mimeType = inferMimeType(resolvedUrl, isM3u8),
+            headers = buildPlaybackHeaders(parserUrl),
         )
+    }
+
+    fun buildParserUrl(
+        detail: AnimeDetail,
+        source: EpisodeSource,
+        episode: EpisodeItem,
+    ): String {
+        val parserBase = if (source.isVipLike) detail.playerJx.vip else detail.playerJx.direct
+        if (parserBase.isBlank()) {
+            throw IOException("AGE 解析前缀为空")
+        }
+        return parserBase + episode.token
+    }
+
+    fun buildPlaybackHeaders(parserUrl: String): Map<String, String> {
+        val origin = parserUrl.toHttpUrlOrNull()?.let { url ->
+            val defaultPort = when (url.scheme) {
+                "https" -> 443
+                else -> 80
+            }
+            buildString {
+                append(url.scheme)
+                append("://")
+                append(url.host)
+                if (url.port != defaultPort) {
+                    append(':')
+                    append(url.port)
+                }
+            }
+        }.orEmpty()
+
+        return buildMap {
+            put("User-Agent", USER_AGENT)
+            put("Referer", parserUrl)
+            if (origin.isNotBlank()) {
+                put("Origin", origin)
+            }
+        }
+    }
+
+    fun inferMimeType(url: String, isM3u8: Boolean): String? {
+        if (isM3u8) return "application/x-mpegURL"
+        val lower = url.lowercase()
+        return when {
+            lower.contains(".mp4") -> "video/mp4"
+            lower.contains(".flv") -> "video/x-flv"
+            lower.contains(".m4v") -> "video/mp4"
+            lower.contains("bilivideo.com") -> "video/mp4"
+            lower.contains("akamaized.net/obj/") -> "video/mp4"
+            else -> null
+        }
     }
 
     private fun get(url: String): String {
