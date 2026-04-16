@@ -7,3 +7,6 @@
 /.DS_Store
 app/build/
 
+# Checked-in fallback APKs for GitHub release uploads
+!release-assets/
+!release-assets/*.apk
