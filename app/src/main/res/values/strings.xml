@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AGE DM TV</string>
+    <string name="webview_title">AGE DM</string>
+    <string name="btn_back">返回</string>
+    <string name="btn_home">首页</string>
+    <string name="btn_cast">扫码传链接</string>
+    <string name="btn_continue">继续观看</string>
+    <string name="btn_play_pause">播放 / 暂停</string>
+    <string name="btn_speed">倍速</string>
+    <string name="btn_auto_next">自动下一集</string>
+    <string name="btn_sources">播放源</string>
+    <string name="btn_episodes">选集</string>
+</resources>
+

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="age_bg">#08131F</color>
+    <color name="age_surface">#10253A</color>
+    <color name="age_surface_alt">#17324D</color>
+    <color name="age_line">#355A77</color>
+    <color name="age_focus">#6ED9B8</color>
+    <color name="age_text">#F5F7FA</color>
+    <color name="age_text_muted">#9AB1C6</color>
+    <color name="age_scrim">#B0000000</color>
+    <color name="age_error">#FF7A7A</color>
+    <color name="black">#000000</color>
+    <color name="white">#FFFFFF</color>
+</resources>
+
