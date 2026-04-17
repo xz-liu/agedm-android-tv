@@ -33,6 +33,7 @@ import io.agedm.tv.databinding.ActivityMainBinding
 import io.agedm.tv.ui.adapter.BrowseSectionAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import java.util.Calendar
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -305,7 +306,7 @@ class MainActivity : AppCompatActivity() {
                 binding.pageSubtitle.text = "推荐、更新与每日追番"
                 showSections(sections, emptyMessage = "首页暂时没有内容")
             }.onFailure { error ->
-                showError("首页加载失败：${error.message.orEmpty()}")
+                handleLoadFailure("首页加载失败", error)
             }
         }
     }
@@ -330,7 +331,7 @@ class MainActivity : AppCompatActivity() {
                     updatePagination(visible = result.total > result.size)
                 }
                 .onFailure { error ->
-                    showError("目录加载失败：${error.message.orEmpty()}")
+                    handleLoadFailure("目录加载失败", error)
                 }
         }
     }
@@ -349,7 +350,7 @@ class MainActivity : AppCompatActivity() {
                     showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
                 }
                 .onFailure { error ->
-                    showError("推荐加载失败：${error.message.orEmpty()}")
+                    handleLoadFailure("推荐加载失败", error)
                 }
         }
     }
@@ -370,7 +371,7 @@ class MainActivity : AppCompatActivity() {
                     updatePagination(visible = result.total > result.size)
                 }
                 .onFailure { error ->
-                    showError("更新加载失败：${error.message.orEmpty()}")
+                    handleLoadFailure("更新加载失败", error)
                 }
         }
     }
@@ -392,7 +393,7 @@ class MainActivity : AppCompatActivity() {
                     showSections(sections, emptyMessage = "排行榜暂时没有内容")
                 }
                 .onFailure { error ->
-                    showError("排行加载失败：${error.message.orEmpty()}")
+                    handleLoadFailure("排行加载失败", error)
                 }
         }
     }
@@ -433,7 +434,7 @@ class MainActivity : AppCompatActivity() {
                     updatePagination(visible = result.total > result.size)
                 }
                 .onFailure { error ->
-                    showError("搜索失败：${error.message.orEmpty()}")
+                    handleLoadFailure("搜索失败", error)
                 }
         }
     }
@@ -533,6 +534,11 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.text = message
         binding.emptyStateText.isVisible = true
         binding.contentRecycler.isVisible = true
+    }
+
+    private fun handleLoadFailure(prefix: String, error: Throwable) {
+        if (error is CancellationException) return
+        showError("$prefix：${error.message.orEmpty()}")
     }
 
     private fun updateBottomNav() {
