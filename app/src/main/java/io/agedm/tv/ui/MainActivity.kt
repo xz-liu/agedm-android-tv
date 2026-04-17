@@ -1,6 +1,9 @@
 package io.agedm.tv.ui
 
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
@@ -15,6 +18,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.R
@@ -36,6 +41,7 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
 
     private enum class Screen {
+        CAST,
         HOME,
         CATALOG,
         RECOMMEND,
@@ -71,6 +77,7 @@ class MainActivity : AppCompatActivity() {
     private var currentTotal: Int = 0
     private var catalogQuery = CatalogQuery()
     private var rankYear = "all"
+    private var currentCastUrl: String? = null
     private var loadJob: Job? = null
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
@@ -141,9 +148,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNav() {
-        binding.navCastButton.setOnClickListener {
-            startActivity(Intent(this, LinkCastActivity::class.java))
-        }
+        binding.navCastButton.setOnClickListener { openScreen(Screen.CAST) }
         binding.navHomeButton.setOnClickListener { openScreen(Screen.HOME) }
         binding.navCatalogButton.setOnClickListener { openScreen(Screen.CATALOG) }
         binding.navRecommendButton.setOnClickListener { openScreen(Screen.RECOMMEND) }
@@ -239,16 +244,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openScreen(screen: Screen, page: Int = 1) {
-        slideFromRight = screen.navIndex() >= currentScreen.navIndex() || page > currentPage
+        slideFromRight = when {
+            page != currentPage -> page > currentPage
+            else -> screen.navIndex() >= currentScreen.navIndex()
+        }
         currentScreen = screen
         currentPage = page
         currentPageSize = when (screen) {
+            Screen.CAST -> 0
             Screen.SEARCH -> 24
             Screen.RECOMMEND -> 100
             else -> 30
         }
         updateBottomNav()
         when (screen) {
+            Screen.CAST -> loadCast()
             Screen.HOME -> loadHome()
             Screen.CATALOG -> loadCatalog(page)
             Screen.RECOMMEND -> loadRecommend()
@@ -257,6 +267,15 @@ class MainActivity : AppCompatActivity() {
             Screen.HISTORY -> loadHistory()
             Screen.SEARCH -> loadSearch(page)
         }
+    }
+
+    private fun loadCast() {
+        loadJob?.cancel()
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        currentTotal = 0
+        currentCastUrl = app.linkCastManager.ensureStarted()
+        showCastPage(currentCastUrl)
     }
 
     private fun loadHome() {
@@ -418,6 +437,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSections(sections: List<BrowseSection>, emptyMessage: String) {
+        prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
         binding.contentRecycler.layoutManager = LinearLayoutManager(this)
@@ -426,10 +446,11 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.isVisible = sections.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
-        animateContentIn()
+        animateContentIn(binding.contentRecycler)
     }
 
     private fun showGrid(items: List<AnimeCard>, emptyMessage: String) {
+        prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
         binding.contentRecycler.layoutManager = GridLayoutManager(this, 6)
@@ -438,32 +459,66 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.isVisible = items.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
-        animateContentIn()
+        animateContentIn(binding.contentRecycler)
     }
 
-    private fun animateContentIn() {
-        val width = binding.contentRecycler.width
+    private fun prepareBrowseContent() {
+        binding.pageHeader.isVisible = true
+        binding.castContent.isVisible = false
+        binding.castErrorText.isVisible = false
+        binding.castQrImage.setImageDrawable(null)
+    }
+
+    private fun showCastPage(serverUrl: String?) {
+        binding.pageHeader.isVisible = false
+        binding.contentRecycler.isVisible = false
+        binding.loadingLayout.isVisible = false
+        binding.emptyStateText.isVisible = false
+        binding.castContent.isVisible = true
+        if (serverUrl.isNullOrBlank()) {
+            binding.castQrImage.setImageDrawable(null)
+            binding.castErrorText.isVisible = true
+            binding.castErrorText.text = app.linkCastManager.status.value
+        } else {
+            binding.castErrorText.isVisible = false
+            binding.castQrImage.setImageBitmap(createQrBitmap(serverUrl))
+        }
+        updateFocusTargets()
+        animateContentIn(binding.castContent)
+    }
+
+    private fun animateContentIn(target: View) {
+        target.animate().cancel()
+        val width = binding.contentStage.width
             .takeIf { it > 0 }?.toFloat()
             ?: resources.displayMetrics.widthPixels.toFloat()
-        binding.contentRecycler.translationX = if (slideFromRight) width else -width
-        binding.contentRecycler.animate()
-            .translationX(0f)
-            .setDuration(260)
-            .setInterpolator(DecelerateInterpolator(2f))
-            .start()
+        val offset = width * 0.18f
+        target.alpha = 0.88f
+        target.translationX = if (slideFromRight) offset else -offset
+        target.post {
+            target.animate().cancel()
+            target.animate()
+                .translationX(0f)
+                .alpha(1f)
+                .setDuration(260)
+                .setInterpolator(DecelerateInterpolator(2f))
+                .start()
+        }
     }
 
     private fun Screen.navIndex() = when (this) {
-        Screen.HOME -> 0
-        Screen.CATALOG -> 1
-        Screen.RECOMMEND -> 2
-        Screen.UPDATE -> 3
-        Screen.RANK -> 4
-        Screen.HISTORY -> 5
+        Screen.CAST -> 0
+        Screen.HOME -> 1
+        Screen.CATALOG -> 2
+        Screen.RECOMMEND -> 3
+        Screen.UPDATE -> 4
+        Screen.RANK -> 5
+        Screen.HISTORY -> 6
         Screen.SEARCH -> -1
     }
 
     private fun renderLoading(message: String) {
+        prepareBrowseContent()
         binding.loadingText.text = message
         binding.loadingLayout.isVisible = true
         binding.emptyStateText.isVisible = false
@@ -471,6 +526,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showError(message: String) {
+        prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.emptyStateText.text = message
         binding.emptyStateText.isVisible = true
@@ -478,7 +534,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateBottomNav() {
-        binding.navCastButton.isSelected = false
+        binding.navCastButton.isSelected = currentScreen == Screen.CAST
         binding.navHomeButton.isSelected = currentScreen == Screen.HOME
         binding.navCatalogButton.isSelected = currentScreen == Screen.CATALOG
         binding.navRecommendButton.isSelected = currentScreen == Screen.RECOMMEND
@@ -610,6 +666,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateFocusTargets() {
+        if (currentScreen == Screen.CAST) {
+            navButtons.forEach { button ->
+                button.nextFocusDownId = button.id
+            }
+            return
+        }
         val firstFilter = visibleFilterButtons().firstOrNull()
         navButtons.forEach { button ->
             button.nextFocusDownId = firstFilter?.id ?: binding.contentRecycler.id
@@ -623,6 +685,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun currentNavButton(): Button {
         return when (currentScreen) {
+            Screen.CAST -> binding.navCastButton
             Screen.HOME -> binding.navHomeButton
             Screen.CATALOG -> binding.navCatalogButton
             Screen.RECOMMEND -> binding.navRecommendButton
@@ -667,6 +730,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             .show()
+    }
+
+    private fun createQrBitmap(content: String): Bitmap {
+        val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 1000, 1000)
+        val bitmap = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.RGB_565)
+        for (x in 0 until matrix.width) {
+            for (y in 0 until matrix.height) {
+                bitmap.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+            }
+        }
+        return bitmap
     }
 
     private fun navigateBack() {
@@ -750,6 +824,12 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
         private const val NAV_FOCUS_DELAY_MS = 300L
+
+        fun createIntent(context: Context, route: AgeRoute? = null): Intent {
+            return Intent(context, MainActivity::class.java).apply {
+                route?.let { putExtra(EXTRA_OPEN_ROUTE, AgeLinks.buildWebUrl(it)) }
+            }
+        }
 
         private val REGION_OPTIONS = listOf(
             FilterOption("全部", "all"),

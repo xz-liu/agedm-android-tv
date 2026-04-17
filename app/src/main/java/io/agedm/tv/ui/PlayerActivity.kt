@@ -13,7 +13,9 @@ import android.webkit.WebViewClient
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -40,6 +42,7 @@ import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -92,6 +95,7 @@ class PlayerActivity : AppCompatActivity() {
         setupLists()
         setupButtons()
         setupBackBehavior()
+        collectIncomingRoutes()
 
         autoNextEnabled = app.playbackStore.isAutoNextEnabled()
         playbackSpeed = app.playbackStore.getPlaybackSpeed()
@@ -101,6 +105,11 @@ class PlayerActivity : AppCompatActivity() {
         showControls()
         loadDetail()
         startProgressLoop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        app.linkCastManager.consumePendingRoute()?.let(::handleIncomingRoute)
     }
 
     override fun onPause() {
@@ -178,6 +187,49 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun collectIncomingRoutes() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                app.linkCastManager.incomingRoutes.collectLatest { route ->
+                    app.linkCastManager.consumePendingRoute()
+                    handleIncomingRoute(route)
+                }
+            }
+        }
+    }
+
+    private fun handleIncomingRoute(route: AgeRoute) {
+        when (route) {
+            AgeRoute.Home,
+            is AgeRoute.Search,
+            is AgeRoute.Web,
+            -> {
+                startActivity(
+                    MainActivity.createIntent(this, route)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+                finish()
+            }
+
+            is AgeRoute.Detail -> {
+                startActivity(DetailActivity.createIntent(this, route.animeId))
+                finish()
+            }
+
+            is AgeRoute.Play -> {
+                startActivity(
+                    createIntent(
+                        context = this,
+                        animeId = route.animeId,
+                        sourceIndex = route.sourceIndex,
+                        episodeIndex = route.episodeIndex,
+                    ),
+                )
+                finish()
+            }
+        }
     }
 
     private fun setupPlayer() {

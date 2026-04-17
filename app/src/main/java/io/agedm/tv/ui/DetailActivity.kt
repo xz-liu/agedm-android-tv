@@ -6,15 +6,19 @@ import android.os.Bundle
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import io.agedm.tv.AgeTvApplication
+import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AgeRelatedItem
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.AnimeDetail
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
+import kotlinx.coroutines.flow.collectLatest
 import io.agedm.tv.databinding.ActivityDetailBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
@@ -44,7 +48,13 @@ class DetailActivity : AppCompatActivity() {
         setupLists()
         setupButtons()
         setupBackBehavior()
+        collectIncomingRoutes()
         loadDetail()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        app.linkCastManager.consumePendingRoute()?.let(::handleIncomingRoute)
     }
 
     private fun setupLists() {
@@ -107,6 +117,17 @@ class DetailActivity : AppCompatActivity() {
     private fun setupBackBehavior() {
         onBackPressedDispatcher.addCallback(this) {
             finish()
+        }
+    }
+
+    private fun collectIncomingRoutes() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                app.linkCastManager.incomingRoutes.collectLatest { route ->
+                    app.linkCastManager.consumePendingRoute()
+                    handleIncomingRoute(route)
+                }
+            }
         }
     }
 
@@ -224,6 +245,38 @@ class DetailActivity : AppCompatActivity() {
 
     private fun openDetail(animeId: Long) {
         startActivity(createIntent(this, animeId))
+    }
+
+    private fun handleIncomingRoute(route: AgeRoute) {
+        when (route) {
+            AgeRoute.Home,
+            is AgeRoute.Search,
+            is AgeRoute.Web,
+            -> {
+                startActivity(
+                    MainActivity.createIntent(this, route)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+                finish()
+            }
+
+            is AgeRoute.Detail -> {
+                startActivity(createIntent(this, route.animeId))
+                finish()
+            }
+
+            is AgeRoute.Play -> {
+                startActivity(
+                    PlayerActivity.createIntent(
+                        context = this,
+                        animeId = route.animeId,
+                        sourceIndex = route.sourceIndex,
+                        episodeIndex = route.episodeIndex,
+                    ),
+                )
+                finish()
+            }
+        }
     }
 
     private fun showError(message: String) {
