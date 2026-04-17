@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.EditText
 import androidx.activity.addCallback
@@ -74,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private var loadJob: Job? = null
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
+    private var slideFromRight = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -281,6 +283,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openScreen(screen: Screen, page: Int = 1) {
+        slideFromRight = screen.navIndex() >= currentScreen.navIndex() || page > currentPage
         currentScreen = screen
         currentPage = page
         currentPageSize = when (screen) {
@@ -468,6 +471,7 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.isVisible = sections.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
+        animateContentIn()
     }
 
     private fun showGrid(items: List<AnimeCard>, emptyMessage: String) {
@@ -479,6 +483,29 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.isVisible = items.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
+        animateContentIn()
+    }
+
+    private fun animateContentIn() {
+        val width = binding.contentRecycler.width
+            .takeIf { it > 0 }?.toFloat()
+            ?: resources.displayMetrics.widthPixels.toFloat()
+        binding.contentRecycler.translationX = if (slideFromRight) width else -width
+        binding.contentRecycler.animate()
+            .translationX(0f)
+            .setDuration(260)
+            .setInterpolator(DecelerateInterpolator(2f))
+            .start()
+    }
+
+    private fun Screen.navIndex() = when (this) {
+        Screen.HOME -> 0
+        Screen.CATALOG -> 1
+        Screen.RECOMMEND -> 2
+        Screen.UPDATE -> 3
+        Screen.RANK -> 4
+        Screen.HISTORY -> 5
+        Screen.SEARCH -> -1
     }
 
     private fun renderLoading(message: String) {

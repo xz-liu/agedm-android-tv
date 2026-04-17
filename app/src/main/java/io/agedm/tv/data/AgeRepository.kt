@@ -280,7 +280,7 @@ class AgeRepository(
             title = title,
             cover = cover,
             badge = updateLabel,
-            subtitle = "AGE 动画",
+            subtitle = "",
         )
     }
 
