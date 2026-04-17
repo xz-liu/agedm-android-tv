@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Bundle
 import android.text.InputType
+import android.view.KeyEvent
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
@@ -190,6 +192,16 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this) {
             navigateBack()
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val focused = currentFocus
+            if (focused != null && shouldBlockEdgeNavigation(focused, event.keyCode)) {
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun configureNavWrapAround() {
@@ -689,6 +701,45 @@ class MainActivity : AppCompatActivity() {
             button.nextFocusUpId = currentNavButton().id
             button.nextFocusDownId = binding.contentRecycler.id
         }
+    }
+
+    private fun shouldBlockEdgeNavigation(focused: View, keyCode: Int): Boolean {
+        if (isInNavArea(focused)) {
+            return keyCode == KeyEvent.KEYCODE_DPAD_UP
+        }
+
+        val direction = when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> View.FOCUS_LEFT
+            KeyEvent.KEYCODE_DPAD_RIGHT -> View.FOCUS_RIGHT
+            KeyEvent.KEYCODE_DPAD_DOWN -> View.FOCUS_DOWN
+            else -> return false
+        }
+
+        val next = focused.focusSearch(direction) ?: return true
+        if (next === focused) return true
+        if (isInNavArea(next)) return true
+
+        val focusedRect = Rect().also(focused::getGlobalVisibleRect)
+        val nextRect = Rect().also(next::getGlobalVisibleRect)
+        return when (direction) {
+            View.FOCUS_LEFT -> nextRect.centerX() >= focusedRect.centerX()
+            View.FOCUS_RIGHT -> nextRect.centerX() <= focusedRect.centerX()
+            View.FOCUS_DOWN -> nextRect.centerY() <= focusedRect.centerY()
+            else -> false
+        }
+    }
+
+    private fun isInNavArea(view: View): Boolean {
+        return isDescendantOf(view, binding.bottomNav)
+    }
+
+    private fun isDescendantOf(view: View, ancestor: View): Boolean {
+        var current: View? = view
+        while (current != null) {
+            if (current === ancestor) return true
+            current = current.parent as? View
+        }
+        return false
     }
 
     private fun currentNavButton(): Button {
