@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.jsoup.Jsoup
 
 @OptIn(ExperimentalSerializationApi::class)
 class AgeRepository(
@@ -23,7 +24,10 @@ class AgeRepository(
     suspend fun fetchDetail(animeId: Long): AnimeDetail = withContext(Dispatchers.IO) {
         val body = cachedGet("detail_$animeId", TTL_DETAIL_MS, apiUrl("detail/$animeId"))
         val response = json.decodeFromString<AgeDetailResponse>(body)
-        response.toAnimeDetail()
+        val desktopRecommendations = runCatching {
+            fetchDesktopRecommendations(animeId)
+        }.getOrElse { emptyList() }
+        response.toAnimeDetail(desktopRecommendations)
     }
 
     suspend fun fetchHomeFeed(): HomeFeed = withContext(Dispatchers.IO) {
@@ -205,18 +209,23 @@ class AgeRepository(
         return "$DEFAULT_COVER_BASE/$animeId.jpg"
     }
 
-    private fun cachedGet(key: String, ttlMs: Long, url: String): String {
+    private fun cachedGet(
+        key: String,
+        ttlMs: Long,
+        url: String,
+        referer: String = MOBILE_REFERER,
+    ): String {
         cache?.get(key, ttlMs)?.let { return it }
-        val fresh = get(url)
+        val fresh = get(url, referer)
         cache?.put(key, fresh)
         return fresh
     }
 
-    private fun get(url: String): String {
+    private fun get(url: String, referer: String = MOBILE_REFERER): String {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
-            .header("Referer", "https://m.agedm.io/")
+            .header("Referer", referer)
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
@@ -226,7 +235,43 @@ class AgeRepository(
         }
     }
 
-    private fun AgeDetailResponse.toAnimeDetail(): AnimeDetail {
+    private fun fetchDesktopRecommendations(animeId: Long): List<AgeRelatedItem> {
+        val html = cachedGet(
+            key = "detail_desktop_$animeId",
+            ttlMs = TTL_DETAIL_MS,
+            url = desktopDetailUrl(animeId),
+            referer = DESKTOP_REFERER,
+        )
+        val document = Jsoup.parse(html)
+        val section = document.selectFirst("div.video_list_box--hd:matchesOwn(^相关推荐$)")
+            ?: document.getElementsContainingOwnText("相关推荐")
+                .firstOrNull { it.text().trim() == "相关推荐" }
+            ?: return emptyList()
+        val cards = section.parent()
+            ?.select("div.video_list_box--bd div.video_item")
+            .orEmpty()
+
+        return cards.mapNotNull { card ->
+            val link = card.selectFirst("a[href*=/detail/]") ?: return@mapNotNull null
+            val animeIdValue = detailPathPattern.find(link.attr("href"))?.groupValues?.getOrNull(1)?.toLongOrNull()
+                ?: return@mapNotNull null
+            AgeRelatedItem(
+                animeId = animeIdValue,
+                title = link.text().trim(),
+                cover = card.selectFirst("img")?.attr("data-original")
+                    ?.ifBlank { card.selectFirst("img")?.attr("src").orEmpty() }
+                    .orEmpty(),
+                updateLabel = card.selectFirst("span.video_item--info")?.text().orEmpty(),
+            )
+        }
+            .distinctBy { it.animeId }
+    }
+
+    private fun desktopDetailUrl(animeId: Long): String {
+        return "$DESKTOP_BASE_URL/detail/$animeId"
+    }
+
+    private fun AgeDetailResponse.toAnimeDetail(desktopRecommendations: List<AgeRelatedItem>): AnimeDetail {
         val vipSources = playerVipRaw.split(",")
             .map { it.trim() }
             .filter { it.isNotBlank() }
@@ -268,7 +313,7 @@ class AgeRepository(
             tags = video.tags,
             sources = sources,
             related = series,
-            similar = similar,
+            similar = desktopRecommendations.ifEmpty { similar },
             vipSourceKeys = vipSources,
             playerJx = playerJx,
         )
@@ -366,10 +411,14 @@ class AgeRepository(
         private const val TTL_DETAIL_MS = 2 * 60 * 60 * 1000L
 
         private const val API_BASE_URL = "https://api.agedm.io/v2"
+        private const val DESKTOP_BASE_URL = "https://www.agedm.io"
         private const val DEFAULT_COVER_BASE = "https://cdn.aqdstatic.com:966/age"
+        private const val MOBILE_REFERER = "https://m.agedm.io/"
+        private const val DESKTOP_REFERER = "https://www.agedm.io/"
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 
         private val streamPattern = Regex("""var\s+Vurl\s*=\s*'([^']+)'""")
+        private val detailPathPattern = Regex("""/detail/(\d+)""")
     }
 }
