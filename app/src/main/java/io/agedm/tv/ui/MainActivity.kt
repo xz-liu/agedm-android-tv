@@ -73,6 +73,7 @@ class MainActivity : AppCompatActivity() {
     private var rankYear = "all"
     private var loadJob: Job? = null
     private var overlayJob: Job? = null
+    private var focusNavJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -146,6 +147,30 @@ class MainActivity : AppCompatActivity() {
         binding.navUpdateButton.setOnClickListener { openScreen(Screen.UPDATE) }
         binding.navRankButton.setOnClickListener { openScreen(Screen.RANK) }
         binding.navHistoryButton.setOnClickListener { openScreen(Screen.HISTORY) }
+
+        val focusListener = View.OnFocusChangeListener { view, hasFocus ->
+            if (!hasFocus) return@OnFocusChangeListener
+            val screen = when (view.id) {
+                R.id.navHomeButton -> Screen.HOME
+                R.id.navCatalogButton -> Screen.CATALOG
+                R.id.navRecommendButton -> Screen.RECOMMEND
+                R.id.navUpdateButton -> Screen.UPDATE
+                R.id.navRankButton -> Screen.RANK
+                R.id.navHistoryButton -> Screen.HISTORY
+                else -> return@OnFocusChangeListener
+            }
+            if (screen == currentScreen) return@OnFocusChangeListener
+            focusNavJob?.cancel()
+            focusNavJob = lifecycleScope.launch {
+                delay(NAV_FOCUS_DELAY_MS)
+                openScreen(screen)
+            }
+        }
+        listOf(
+            binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
+            binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
+        ).forEach { it.onFocusChangeListener = focusListener }
+
         updateBottomNav()
     }
 
@@ -754,6 +779,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
+        private const val NAV_FOCUS_DELAY_MS = 300L
 
         private val REGION_OPTIONS = listOf(
             FilterOption("全部", "all"),

@@ -12,6 +12,7 @@ import okhttp3.Request
 
 @OptIn(ExperimentalSerializationApi::class)
 class AgeRepository(
+    private val cache: ContentCache? = null,
     private val client: OkHttpClient = OkHttpClient.Builder().build(),
     private val json: Json = Json {
         ignoreUnknownKeys = true
@@ -20,13 +21,13 @@ class AgeRepository(
 ) {
 
     suspend fun fetchDetail(animeId: Long): AnimeDetail = withContext(Dispatchers.IO) {
-        val body = get(apiUrl("detail/$animeId"))
+        val body = cachedGet("detail_$animeId", TTL_DETAIL_MS, apiUrl("detail/$animeId"))
         val response = json.decodeFromString<AgeDetailResponse>(body)
         response.toAnimeDetail()
     }
 
     suspend fun fetchHomeFeed(): HomeFeed = withContext(Dispatchers.IO) {
-        val body = get(apiUrl("home-list"))
+        val body = cachedGet("home", TTL_HOME_MS, apiUrl("home-list"))
         val response = json.decodeFromString<AgeHomeResponse>(body)
         HomeFeed(
             latest = response.latest.map { it.toPosterCard() },
@@ -50,7 +51,7 @@ class AgeRepository(
     }
 
     suspend fun fetchRecommend(page: Int = 1, size: Int = 100): PagedCards = withContext(Dispatchers.IO) {
-        val body = get(apiUrl("recommend"))
+        val body = cachedGet("recommend", TTL_LIST_MS, apiUrl("recommend"))
         val response = json.decodeFromString<AgePosterListResponse>(body)
         PagedCards(
             items = response.videos.map { it.toPosterCard() },
@@ -61,7 +62,8 @@ class AgeRepository(
     }
 
     suspend fun fetchUpdate(page: Int, size: Int = 30): PagedCards = withContext(Dispatchers.IO) {
-        val body = get(apiUrl("update", "page" to page.toString(), "size" to size.toString()))
+        val url = apiUrl("update", "page" to page.toString(), "size" to size.toString())
+        val body = cachedGet("update_p$page", TTL_LIST_MS, url)
         val response = json.decodeFromString<AgePosterListResponse>(body)
         PagedCards(
             items = response.videos.map { it.toPosterCard() },
@@ -72,22 +74,23 @@ class AgeRepository(
     }
 
     suspend fun fetchCatalog(query: CatalogQuery): PagedCards = withContext(Dispatchers.IO) {
-        val body = get(
-            apiUrl(
-                "catalog",
-                "page" to query.page.toString(),
-                "size" to query.size.toString(),
-                "region" to query.region,
-                "genre" to query.genre,
-                "label" to query.label,
-                "year" to query.year,
-                "season" to query.season,
-                "status" to query.status,
-                "resource" to query.resource,
-                "letter" to query.letter,
-                "order" to query.order,
-            ),
+        val url = apiUrl(
+            "catalog",
+            "page" to query.page.toString(),
+            "size" to query.size.toString(),
+            "region" to query.region,
+            "genre" to query.genre,
+            "label" to query.label,
+            "year" to query.year,
+            "season" to query.season,
+            "status" to query.status,
+            "resource" to query.resource,
+            "letter" to query.letter,
+            "order" to query.order,
         )
+        val cacheKey = "catalog_p${query.page}_r${query.region}_g${query.genre}" +
+            "_l${query.label}_y${query.year}_o${query.order}"
+        val body = cachedGet(cacheKey, TTL_LIST_MS, url)
         val response = json.decodeFromString<AgeCatalogResponse>(body)
         PagedCards(
             items = response.videos.map { it.toAnimeCard() },
@@ -98,13 +101,9 @@ class AgeRepository(
     }
 
     suspend fun search(query: String, page: Int, size: Int = 24): PagedCards = withContext(Dispatchers.IO) {
-        val body = get(
-            apiUrl(
-                "search",
-                "query" to query,
-                "page" to page.toString(),
-            ),
-        )
+        val url = apiUrl("search", "query" to query, "page" to page.toString())
+        val safeQuery = query.take(40).replace(Regex("[^\\w\\u4e00-\\u9fa5]"), "_")
+        val body = cachedGet("search_${safeQuery}_p$page", TTL_SEARCH_MS, url)
         val response = json.decodeFromString<AgeSearchResponse>(body)
         PagedCards(
             items = response.data.videos.map { it.toAnimeCard() },
@@ -115,7 +114,7 @@ class AgeRepository(
     }
 
     suspend fun fetchRankSections(year: String = "all"): List<BrowseSection> = withContext(Dispatchers.IO) {
-        val body = get(apiUrl("rank", "year" to year))
+        val body = cachedGet("rank_$year", TTL_LIST_MS, apiUrl("rank", "year" to year))
         val response = json.decodeFromString<AgeRankResponse>(body)
         val titles = listOf("周榜", "月榜", "总榜")
         response.rank.mapIndexed { index, entries ->
@@ -204,6 +203,13 @@ class AgeRepository(
 
     fun buildCoverUrl(animeId: Long): String {
         return "$DEFAULT_COVER_BASE/$animeId.jpg"
+    }
+
+    private fun cachedGet(key: String, ttlMs: Long, url: String): String {
+        cache?.get(key, ttlMs)?.let { return it }
+        val fresh = get(url)
+        cache?.put(key, fresh)
+        return fresh
     }
 
     private fun get(url: String): String {
@@ -354,6 +360,11 @@ class AgeRepository(
     }
 
     companion object {
+        private const val TTL_HOME_MS = 10 * 60 * 1000L
+        private const val TTL_LIST_MS = 10 * 60 * 1000L
+        private const val TTL_SEARCH_MS = 5 * 60 * 1000L
+        private const val TTL_DETAIL_MS = 2 * 60 * 60 * 1000L
+
         private const val API_BASE_URL = "https://api.agedm.io/v2"
         private const val DEFAULT_COVER_BASE = "https://cdn.aqdstatic.com:966/age"
         private const val USER_AGENT =
