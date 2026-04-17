@@ -106,6 +106,7 @@ class MainActivity : AppCompatActivity() {
 
         if (!handleIntent(intent)) {
             openScreen(Screen.HOME)
+            binding.navHomeButton.post { binding.navHomeButton.requestFocus() }
         }
     }
 
