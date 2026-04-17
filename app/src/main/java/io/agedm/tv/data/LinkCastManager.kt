@@ -9,8 +9,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
 
-class LinkCastManager {
+class LinkCastManager(private val repository: AgeRepository) {
     private var server: LinkCastHttpServer? = null
     private var serverUrl: String? = null
 
@@ -39,7 +40,7 @@ class LinkCastManager {
 
         for (port in 8383..8390) {
             try {
-                val candidate = LinkCastHttpServer(port, ::handleIncomingRoute)
+                val candidate = LinkCastHttpServer(port, ::handleIncomingRoute, repository)
                 candidate.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 server = candidate
                 serverUrl = "http://$localIp:$port/"
@@ -76,13 +77,42 @@ class LinkCastManager {
     private class LinkCastHttpServer(
         port: Int,
         private val onRoute: (AgeRoute) -> Unit,
+        private val repository: AgeRepository,
     ) : NanoHTTPD(port) {
 
         override fun serve(session: IHTTPSession): Response {
             return when {
                 session.method == Method.GET && session.uri == "/" -> html(rootPage())
+                session.method == Method.GET && session.uri == "/api/search" -> handleSearch(session)
                 session.method == Method.POST && session.uri == "/submit" -> handleSubmit(session)
-                else -> newFixedLengthResponse(NanoHTTPD.Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
+                else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
+            }
+        }
+
+        private fun handleSearch(session: IHTTPSession): Response {
+            val q = session.parameters["q"]?.firstOrNull()?.trim().orEmpty()
+            if (q.isBlank()) return json("[]")
+            return try {
+                val results = runBlocking { repository.search(q, 1, 20) }
+                val array = buildString {
+                    append('[')
+                    results.items.forEachIndexed { i, card ->
+                        if (i > 0) append(',')
+                        append("{\"id\":")
+                        append(card.animeId)
+                        append(",\"title\":\"")
+                        append(escapeJson(card.title))
+                        append("\",\"badge\":\"")
+                        append(escapeJson(card.badge))
+                        append("\",\"cover\":\"")
+                        append(escapeJson(card.cover))
+                        append("\"}")
+                    }
+                    append(']')
+                }
+                json(array)
+            } catch (_: Throwable) {
+                json("[]")
             }
         }
 
@@ -90,36 +120,17 @@ class LinkCastManager {
             val files = HashMap<String, String>()
             return try {
                 session.parseBody(files)
-                val rawInput = session.parameters["link"]?.firstOrNull()
+                val rawInput = session.parameters["id"]?.firstOrNull()
+                    ?: session.parameters["link"]?.firstOrNull()
                 val route = AgeLinks.parseInput(rawInput)
                 if (route == null) {
-                    html(
-                        formPage(
-                            title = "链接无效",
-                            message = "只接受 AGE DM 详情页、播放页链接或纯动画 ID。",
-                            error = true,
-                        ),
-                        NanoHTTPD.Response.Status.BAD_REQUEST,
-                    )
+                    json("{\"ok\":false,\"error\":\"无效的动画 ID\"}", Response.Status.BAD_REQUEST)
                 } else {
                     onRoute(route)
-                    html(
-                        formPage(
-                            title = "已提交到电视",
-                            message = "电视端会自动打开：${escape(AgeLinks.describe(route))}",
-                            error = false,
-                        ),
-                    )
+                    json("{\"ok\":true,\"title\":\"${escapeJson(AgeLinks.describe(route))}\"}")
                 }
             } catch (_: Throwable) {
-                html(
-                    formPage(
-                        title = "提交失败",
-                        message = "请求解析失败，请刷新页面后重试。",
-                        error = true,
-                    ),
-                    NanoHTTPD.Response.Status.INTERNAL_ERROR,
-                )
+                json("{\"ok\":false,\"error\":\"请求解析失败\"}", Response.Status.INTERNAL_ERROR)
             }
         }
 
@@ -128,78 +139,101 @@ class LinkCastManager {
                 <!doctype html>
                 <html lang="zh-CN">
                 <head>
-                  <meta charset="utf-8" />
-                  <meta name="viewport" content="width=device-width, initial-scale=1" />
+                  <meta charset="utf-8"/>
+                  <meta name="viewport" content="width=device-width,initial-scale=1"/>
                   <title>AGE DM TV 投送</title>
                   <style>
-                    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #08131f; color: #f5f7fa; }
-                    main { max-width: 680px; margin: 0 auto; padding: 32px 20px 40px; }
-                    .card { background: #10253a; border: 1px solid #355a77; border-radius: 18px; padding: 22px; box-sizing: border-box; }
-                    h1 { margin: 0 0 12px; font-size: 24px; }
-                    p { line-height: 1.7; color: #c7d5e2; }
-                    textarea, input { width: 100%; box-sizing: border-box; margin: 12px 0 18px; padding: 14px 16px; border-radius: 12px; border: 1px solid #355a77; background: #17324d; color: #fff; font-size: 16px; }
-                    button { width: 100%; padding: 14px 18px; border: 0; border-radius: 12px; background: #6ed9b8; color: #052016; font-size: 16px; font-weight: 700; }
-                    .tips { margin-top: 18px; font-size: 14px; color: #9ab1c6; }
+                    *{box-sizing:border-box;margin:0;padding:0}
+                    body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#08131f;color:#f5f7fa;min-height:100vh}
+                    header{position:sticky;top:0;z-index:10;background:#08131f;padding:14px 16px 10px;border-bottom:1px solid #1b3549}
+                    header h1{font-size:18px;font-weight:700;margin-bottom:10px;color:#6ed9b8}
+                    #searchInput{width:100%;padding:10px 14px;border-radius:10px;border:1px solid #355a77;background:#0f2236;color:#fff;font-size:16px;outline:none}
+                    #searchInput:focus{border-color:#6ed9b8}
+                    #list{padding:8px 12px 32px}
+                    .item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:12px;margin-bottom:6px;background:#0f2236;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background .15s}
+                    .item:active{background:#1a3d52}
+                    .item img{width:60px;height:84px;border-radius:6px;object-fit:cover;flex-shrink:0;background:#1b3549}
+                    .item-info{flex:1;min-width:0}
+                    .item-title{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+                    .item-badge{margin-top:4px;font-size:12px;color:#6ed9b8}
+                    #empty{text-align:center;padding:60px 20px;color:#4a6b84;font-size:15px;display:none}
+                    #spinner{text-align:center;padding:40px;color:#4a6b84;display:none}
+                    .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a3d52;border:1px solid #6ed9b8;color:#6ed9b8;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap}
+                    .toast.show{opacity:1}
                   </style>
                 </head>
                 <body>
-                  <main>
-                    <div class="card">
-                      <h1>把 AGE DM 链接投到电视</h1>
-                      <p>支持动画详情页链接、播放页链接，或者直接输入纯数字动画 ID。电视和手机需要在同一局域网。</p>
-                      <form action="/submit" method="post">
-                        <input name="link" placeholder="例如 https://m.agedm.io/#/detail/20150086 或 20150086" />
-                        <button type="submit">提交到电视</button>
-                      </form>
-                      <div class="tips">只接受 AGE DM 内容，不会跳转到外站。</div>
-                    </div>
-                  </main>
+                  <header>
+                    <h1>投送到电视</h1>
+                    <input id="searchInput" type="search" placeholder="搜索动画名称…" autocomplete="off" autocorrect="off" spellcheck="false"/>
+                  </header>
+                  <div id="list"></div>
+                  <div id="empty">没有找到相关动画</div>
+                  <div id="spinner">搜索中…</div>
+                  <div class="toast" id="toast"></div>
+                  <script>
+                    var timer=null,lastQ='';
+                    var input=document.getElementById('searchInput');
+                    var list=document.getElementById('list');
+                    var empty=document.getElementById('empty');
+                    var spinner=document.getElementById('spinner');
+                    var toast=document.getElementById('toast');
+                    function doSearch(q){
+                      if(!q){list.innerHTML='';empty.style.display='none';spinner.style.display='none';return}
+                      spinner.style.display='block';list.innerHTML='';empty.style.display='none';
+                      fetch('/api/search?q='+encodeURIComponent(q))
+                        .then(function(r){return r.json()})
+                        .then(function(items){
+                          spinner.style.display='none';
+                          if(!items||items.length===0){empty.style.display='block';return}
+                          list.innerHTML=items.map(function(it){
+                            return '<div class="item" onclick="send('+it.id+',\''+ej(it.title)+'\')">'+
+                              '<img src="'+ea(it.cover)+'" loading="lazy" onerror="this.style.visibility=\'hidden\'"/>'+
+                              '<div class="item-info">'+
+                                '<div class="item-title">'+eh(it.title)+'</div>'+
+                                (it.badge?'<div class="item-badge">'+eh(it.badge)+'</div>':'')+
+                              '</div></div>'
+                          }).join('');
+                        })
+                        .catch(function(){spinner.style.display='none';empty.style.display='block'});
+                    }
+                    function send(id,title){
+                      var fd=new FormData();fd.append('id',id);
+                      fetch('/submit',{method:'POST',body:fd})
+                        .then(function(r){return r.json()})
+                        .then(function(res){showToast(res.ok?('已投送：'+title):'投送失败')})
+                        .catch(function(){showToast('投送失败')});
+                    }
+                    function showToast(msg){
+                      toast.textContent=msg;toast.classList.add('show');
+                      setTimeout(function(){toast.classList.remove('show')},2500);
+                    }
+                    function eh(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+                    function ea(s){return String(s).replace(/"/g,'&quot;')}
+                    function ej(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+                    input.addEventListener('input',function(){
+                      var q=input.value.trim();
+                      clearTimeout(timer);
+                      timer=setTimeout(function(){if(q!==lastQ){lastQ=q;doSearch(q)}},400);
+                    });
+                    input.focus();
+                  </script>
                 </body>
                 </html>
             """.trimIndent()
         }
 
-        private fun formPage(title: String, message: String, error: Boolean): String {
-            val accent = if (error) "#ff7a7a" else "#6ed9b8"
-            return """
-                <!doctype html>
-                <html lang="zh-CN">
-                <head>
-                  <meta charset="utf-8" />
-                  <meta name="viewport" content="width=device-width, initial-scale=1" />
-                  <title>$title</title>
-                  <style>
-                    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #08131f; color: #f5f7fa; display: grid; place-items: center; min-height: 100vh; }
-                    .card { width: min(640px, calc(100vw - 32px)); background: #10253a; border: 1px solid #355a77; border-radius: 18px; padding: 24px; box-sizing: border-box; }
-                    h1 { margin: 0 0 12px; color: $accent; }
-                    p { line-height: 1.7; color: #c7d5e2; }
-                    a { color: #6ed9b8; }
-                  </style>
-                </head>
-                <body>
-                  <div class="card">
-                    <h1>${escape(title)}</h1>
-                    <p>$message</p>
-                    <p><a href="/">继续提交其他链接</a></p>
-                  </div>
-                </body>
-                </html>
-            """.trimIndent()
-        }
-
-        private fun html(
-            body: String,
-            status: NanoHTTPD.Response.Status = NanoHTTPD.Response.Status.OK,
-        ): Response {
+        private fun html(body: String, status: Response.Status = Response.Status.OK): Response {
             return newFixedLengthResponse(status, "text/html; charset=utf-8", body)
         }
 
-        private fun escape(text: String): String {
-            return text
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
+        private fun json(body: String, status: Response.Status = Response.Status.OK): Response {
+            return newFixedLengthResponse(status, "application/json; charset=utf-8", body)
+        }
+
+        private fun escapeJson(text: String): String {
+            return text.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r")
         }
     }
 }

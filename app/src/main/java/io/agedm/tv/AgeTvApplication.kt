@@ -17,5 +17,5 @@ class AgeTvApplication : Application() {
 
     val ageRepository: AgeRepository by lazy { AgeRepository(cache = contentCache) }
 
-    val linkCastManager: LinkCastManager by lazy { LinkCastManager() }
+    val linkCastManager: LinkCastManager by lazy { LinkCastManager(ageRepository) }
 }
