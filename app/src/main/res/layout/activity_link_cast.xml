@@ -10,7 +10,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="扫码传 AGE 链接"
+        android:text="扫码搜索 AGE 动画"
         android:textColor="@color/age_text"
         android:textSize="28sp"
         android:textStyle="bold" />
@@ -19,7 +19,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="手机与电视保持同一局域网，扫码后提交详情页、播放页链接或动画 ID。"
+        android:text="手机与电视保持同一局域网，扫码后可以直接搜索，或提交详情页、播放页链接与动画 ID。"
         android:textColor="@color/age_text_muted"
         android:textSize="15sp" />
 
@@ -68,4 +68,3 @@
         android:textColor="@color/age_text" />
 
 </LinearLayout>
-

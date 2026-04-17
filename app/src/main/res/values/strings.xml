@@ -5,7 +5,7 @@
     <string name="btn_back">返回</string>
     <string name="btn_home">首页</string>
     <string name="btn_search">搜索</string>
-    <string name="btn_cast">扫码传链接</string>
+    <string name="btn_cast">扫码搜索</string>
     <string name="btn_continue">继续观看</string>
     <string name="btn_catalog">目录</string>
     <string name="btn_recommend">推荐</string>

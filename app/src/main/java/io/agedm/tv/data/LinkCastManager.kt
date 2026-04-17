@@ -21,7 +21,7 @@ class LinkCastManager(private val repository: AgeRepository) {
     private val _pendingRoute = MutableStateFlow<AgeRoute?>(null)
     val pendingRoute = _pendingRoute.asStateFlow()
 
-    private val _status = MutableStateFlow("等待手机扫码后提交 AGE 链接")
+    private val _status = MutableStateFlow("等待手机扫码后搜索或提交 AGE 链接")
     val status = _status.asStateFlow()
 
     fun consumePendingRoute(): AgeRoute? {
@@ -44,7 +44,7 @@ class LinkCastManager(private val repository: AgeRepository) {
                 candidate.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 server = candidate
                 serverUrl = "http://$localIp:$port/"
-                _status.value = "手机与电视连接同一局域网后，扫码提交 AGE 链接"
+                _status.value = "手机与电视连接同一局域网后，扫码搜索或提交 AGE 链接"
                 return serverUrl
             } catch (_: IOException) {
                 continue

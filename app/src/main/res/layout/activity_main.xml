@@ -7,89 +7,31 @@
     android:padding="10dp">
 
     <LinearLayout
-        android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        android:visibility="gone">
+        android:orientation="vertical"
+        android:paddingStart="8dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="4dp">
 
-        <Button
-            android:id="@+id/backButton"
+        <TextView
+            android:id="@+id/pageTitle"
             android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:background="@drawable/bg_focusable_small"
-            android:text="@string/btn_back"
-            android:textColor="@color/age_text"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/homeButton"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:layout_marginStart="6dp"
-            android:background="@drawable/bg_focusable_small"
-            android:text="@string/btn_home"
-            android:textColor="@color/age_text"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/searchButton"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:layout_marginStart="6dp"
-            android:background="@drawable/bg_focusable_small"
-            android:text="@string/btn_search"
-            android:textColor="@color/age_text"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/castButton"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:layout_marginStart="6dp"
-            android:background="@drawable/bg_focusable_small"
-            android:text="@string/btn_cast"
-            android:textColor="@color/age_text"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/continueButton"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:layout_marginStart="6dp"
-            android:background="@drawable/bg_focusable_small"
-            android:text="@string/btn_continue"
-            android:textColor="@color/age_text"
-            android:textSize="13sp"
-            android:visibility="gone" />
-
-        <LinearLayout
-            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
+            android:text="@string/app_name"
+            android:textColor="@color/age_text"
+            android:textSize="20sp"
+            android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/pageTitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/app_name"
-                android:textColor="@color/age_text"
-                android:textSize="20sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/pageSubtitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/main_subtitle"
-                android:textColor="@color/age_text_muted"
-                android:textSize="12sp" />
-        </LinearLayout>
+        <TextView
+            android:id="@+id/pageSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/main_subtitle"
+            android:textColor="@color/age_text_muted"
+            android:textSize="12sp" />
     </LinearLayout>
 
     <LinearLayout
@@ -102,9 +44,20 @@
         android:padding="4dp">
 
         <Button
+            android:id="@+id/navCastButton"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_focusable_small"
+            android:text="@string/btn_cast"
+            android:textColor="@color/age_text"
+            android:textSize="13sp" />
+
+        <Button
             android:id="@+id/navHomeButton"
             android:layout_width="0dp"
             android:layout_height="42dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:background="@drawable/bg_focusable_small"
             android:text="@string/btn_home"

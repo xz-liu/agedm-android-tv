@@ -3,7 +3,6 @@ package io.agedm.tv.ui
 import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
-import android.view.KeyEvent
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
@@ -76,6 +75,16 @@ class MainActivity : AppCompatActivity() {
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
     private var slideFromRight = true
+    private val navButtons: List<Button>
+        get() = listOf(
+            binding.navCastButton,
+            binding.navHomeButton,
+            binding.navCatalogButton,
+            binding.navRecommendButton,
+            binding.navUpdateButton,
+            binding.navRankButton,
+            binding.navHistoryButton,
+        )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,7 +95,6 @@ class MainActivity : AppCompatActivity() {
         setupChrome()
         setupBottomNav()
         setupBackBehavior()
-        setupTopBarAutoHide()
         collectIncomingRoutes()
 
         if (!handleIntent(intent)) {
@@ -102,7 +110,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        updateContinueButton()
         if (currentScreen == Screen.HISTORY) {
             loadHistory()
         }
@@ -121,15 +128,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupChrome() {
-        binding.backButton.setOnClickListener { navigateBack() }
-        binding.homeButton.setOnClickListener { openScreen(Screen.HOME) }
-        binding.searchButton.setOnClickListener { showSearchDialog(currentSearchQuery) }
-        binding.castButton.setOnClickListener {
-            startActivity(Intent(this, LinkCastActivity::class.java))
-        }
-        binding.continueButton.setOnClickListener {
-            app.playbackStore.getRecentRecords(1).firstOrNull()?.let(::launchPlayerForRecord)
-        }
         binding.prevPageButton.setOnClickListener {
             if (currentPage > 1) {
                 openScreen(currentScreen, currentPage - 1)
@@ -143,6 +141,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNav() {
+        binding.navCastButton.setOnClickListener {
+            startActivity(Intent(this, LinkCastActivity::class.java))
+        }
         binding.navHomeButton.setOnClickListener { openScreen(Screen.HOME) }
         binding.navCatalogButton.setOnClickListener { openScreen(Screen.CATALOG) }
         binding.navRecommendButton.setOnClickListener { openScreen(Screen.RECOMMEND) }
@@ -173,6 +174,7 @@ class MainActivity : AppCompatActivity() {
             binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
         ).forEach { it.onFocusChangeListener = focusListener }
 
+        configureNavWrapAround()
         updateBottomNav()
     }
 
@@ -182,59 +184,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupTopBarAutoHide() {
-        window.decorView.viewTreeObserver.addOnGlobalFocusChangeListener { _, newFocus ->
-            if (binding.topBar.isVisible && newFocus != null && !isInTopBar(newFocus)) {
-                hideTopBar()
-            }
+    private fun configureNavWrapAround() {
+        navButtons.forEachIndexed { index, button ->
+            val left = navButtons[(index - 1 + navButtons.size) % navButtons.size]
+            val right = navButtons[(index + 1) % navButtons.size]
+            button.nextFocusLeftId = left.id
+            button.nextFocusRightId = right.id
         }
-    }
-
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-            val focused = currentFocus
-            if (focused != null && isNavButton(focused) && !binding.topBar.isVisible) {
-                showTopBar()
-                return true
-            }
-        }
-        return super.dispatchKeyEvent(event)
-    }
-
-    private fun showTopBar() {
-        binding.topBar.visibility = View.VISIBLE
-        val navButtons = listOf(
-            binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
-            binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
-        )
-        navButtons.forEach { it.nextFocusUpId = binding.backButton.id }
-        binding.backButton.requestFocus()
-    }
-
-    private fun hideTopBar() {
-        binding.topBar.visibility = View.GONE
-        val navButtons = listOf(
-            binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
-            binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
-        )
-        navButtons.forEach { it.nextFocusUpId = View.NO_ID }
-    }
-
-    private fun isNavButton(view: View): Boolean {
-        return view == binding.navHomeButton ||
-            view == binding.navCatalogButton ||
-            view == binding.navRecommendButton ||
-            view == binding.navUpdateButton ||
-            view == binding.navRankButton ||
-            view == binding.navHistoryButton
-    }
-
-    private fun isInTopBar(view: View): Boolean {
-        return view == binding.backButton ||
-            view == binding.homeButton ||
-            view == binding.searchButton ||
-            view == binding.castButton ||
-            view == binding.continueButton
     }
 
     private fun collectIncomingRoutes() {
@@ -292,7 +248,6 @@ class MainActivity : AppCompatActivity() {
             else -> 30
         }
         updateBottomNav()
-        updateContinueButton()
         when (screen) {
             Screen.HOME -> loadHome()
             Screen.CATALOG -> loadCatalog(page)
@@ -522,13 +477,8 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
     }
 
-    private fun updateContinueButton() {
-        val recent = app.playbackStore.getRecentRecords(1).firstOrNull()
-        binding.continueButton.isVisible = recent != null
-        binding.continueButton.text = recent?.let { "继续 ${it.animeTitle}" } ?: getString(R.string.btn_continue)
-    }
-
     private fun updateBottomNav() {
+        binding.navCastButton.isSelected = false
         binding.navHomeButton.isSelected = currentScreen == Screen.HOME
         binding.navCatalogButton.isSelected = currentScreen == Screen.CATALOG
         binding.navRecommendButton.isSelected = currentScreen == Screen.RECOMMEND
@@ -661,14 +611,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateFocusTargets() {
         val firstFilter = visibleFilterButtons().firstOrNull()
-        listOf(
-            binding.navHomeButton,
-            binding.navCatalogButton,
-            binding.navRecommendButton,
-            binding.navUpdateButton,
-            binding.navRankButton,
-            binding.navHistoryButton,
-        ).forEach { button ->
+        navButtons.forEach { button ->
             button.nextFocusDownId = firstFilter?.id ?: binding.contentRecycler.id
         }
 
@@ -686,7 +629,7 @@ class MainActivity : AppCompatActivity() {
             Screen.UPDATE -> binding.navUpdateButton
             Screen.RANK -> binding.navRankButton
             Screen.HISTORY -> binding.navHistoryButton
-            Screen.SEARCH -> binding.navHomeButton
+            Screen.SEARCH -> binding.navCastButton
         }
     }
 
