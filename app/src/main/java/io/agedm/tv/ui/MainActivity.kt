@@ -159,6 +159,7 @@ class MainActivity : AppCompatActivity() {
 
         val focusListener = View.OnFocusChangeListener { view, hasFocus ->
             if (!hasFocus) return@OnFocusChangeListener
+            focusNavJob?.cancel()
             val screen = when (view.id) {
                 R.id.navCastButton -> Screen.CAST
                 R.id.navHomeButton -> Screen.HOME
@@ -170,7 +171,6 @@ class MainActivity : AppCompatActivity() {
                 else -> return@OnFocusChangeListener
             }
             if (screen == currentScreen) return@OnFocusChangeListener
-            focusNavJob?.cancel()
             focusNavJob = lifecycleScope.launch {
                 delay(NAV_FOCUS_DELAY_MS)
                 openScreen(screen)
