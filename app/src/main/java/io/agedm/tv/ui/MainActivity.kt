@@ -159,6 +159,7 @@ class MainActivity : AppCompatActivity() {
         val focusListener = View.OnFocusChangeListener { view, hasFocus ->
             if (!hasFocus) return@OnFocusChangeListener
             val screen = when (view.id) {
+                R.id.navCastButton -> Screen.CAST
                 R.id.navHomeButton -> Screen.HOME
                 R.id.navCatalogButton -> Screen.CATALOG
                 R.id.navRecommendButton -> Screen.RECOMMEND
@@ -175,7 +176,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         listOf(
-            binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
+            binding.navCastButton, binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
             binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
         ).forEach { it.onFocusChangeListener = focusListener }
 
