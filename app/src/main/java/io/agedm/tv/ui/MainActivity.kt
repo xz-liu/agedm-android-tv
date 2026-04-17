@@ -82,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private var rankYear = "all"
     private var currentCastUrl: String? = null
     private var loadJob: Job? = null
+    private var loadRequestId: Long = 0L
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
     private var slideFromRight = true
@@ -285,7 +286,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadCast() {
-        loadJob?.cancel()
+        replaceLoadRequest()
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
         currentTotal = 0
@@ -297,11 +298,11 @@ class MainActivity : AppCompatActivity() {
         renderLoading("正在整理首页...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        loadJob?.cancel()
+        val requestId = replaceLoadRequest()
         loadJob = lifecycleScope.launch {
-            runCatching {
+            try {
                 val feed = app.ageRepository.fetchHomeFeed()
-                buildList {
+                val sections = buildList {
                     val todaySection = feed.dailySections.firstOrNull { it.title.startsWith(todayWeekdayPrefix()) }
                     todaySection?.let { add(BrowseSection("今日更新", it.subtitle, it.items.take(12))) }
                     add(BrowseSection("最近更新", "AGE 首页最新上架", feed.latest.take(12)))
@@ -313,12 +314,12 @@ class MainActivity : AppCompatActivity() {
                             .map { it.copy(items = it.items.take(12)) },
                     )
                 }
-            }.onSuccess { sections ->
+                if (!shouldHandleLoadResult(requestId)) return@launch
                 binding.pageTitle.text = getString(R.string.app_name)
                 binding.pageSubtitle.text = "推荐、更新与每日追番"
                 showSections(sections, emptyMessage = "首页暂时没有内容")
-            }.onFailure { error ->
-                handleLoadFailure("首页加载失败", error)
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, "首页加载失败", error)
             }
         }
     }
@@ -331,20 +332,21 @@ class MainActivity : AppCompatActivity() {
             openScreen(Screen.CATALOG)
         }
         updatePagination(visible = false)
-        loadJob?.cancel()
+        val requestId = replaceLoadRequest()
+        val query = catalogQuery
         loadJob = lifecycleScope.launch {
-            runCatching { app.ageRepository.fetchCatalog(catalogQuery) }
-                .onSuccess { result ->
-                    currentTotal = result.total
-                    currentPageSize = result.size
-                    binding.pageTitle.text = "目录"
-                    binding.pageSubtitle.text = "按 AGE 分类快速找番"
-                    showGrid(result.items, emptyMessage = "当前筛选下没有结果")
-                    updatePagination(visible = result.total > result.size)
-                }
-                .onFailure { error ->
-                    handleLoadFailure("目录加载失败", error)
-                }
+            try {
+                val result = app.ageRepository.fetchCatalog(query)
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                currentTotal = result.total
+                currentPageSize = result.size
+                binding.pageTitle.text = "目录"
+                binding.pageSubtitle.text = "按 AGE 分类快速找番"
+                showGrid(result.items, emptyMessage = "当前筛选下没有结果")
+                updatePagination(visible = result.total > result.size)
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, "目录加载失败", error)
+            }
         }
     }
 
@@ -352,18 +354,18 @@ class MainActivity : AppCompatActivity() {
         renderLoading("正在加载推荐...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        loadJob?.cancel()
+        val requestId = replaceLoadRequest()
         loadJob = lifecycleScope.launch {
-            runCatching { app.ageRepository.fetchRecommend() }
-                .onSuccess { result ->
-                    currentTotal = result.total
-                    binding.pageTitle.text = "推荐"
-                    binding.pageSubtitle.text = "AGE 站内精选片单"
-                    showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
-                }
-                .onFailure { error ->
-                    handleLoadFailure("推荐加载失败", error)
-                }
+            try {
+                val result = app.ageRepository.fetchRecommend()
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                currentTotal = result.total
+                binding.pageTitle.text = "推荐"
+                binding.pageSubtitle.text = "AGE 站内精选片单"
+                showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, "推荐加载失败", error)
+            }
         }
     }
 
@@ -371,20 +373,20 @@ class MainActivity : AppCompatActivity() {
         renderLoading("正在加载更新...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        loadJob?.cancel()
+        val requestId = replaceLoadRequest()
         loadJob = lifecycleScope.launch {
-            runCatching { app.ageRepository.fetchUpdate(page = page, size = 30) }
-                .onSuccess { result ->
-                    currentTotal = result.total
-                    currentPageSize = result.size
-                    binding.pageTitle.text = "更新"
-                    binding.pageSubtitle.text = "最近更新的动画作品"
-                    showGrid(result.items, emptyMessage = "更新区暂时没有内容")
-                    updatePagination(visible = result.total > result.size)
-                }
-                .onFailure { error ->
-                    handleLoadFailure("更新加载失败", error)
-                }
+            try {
+                val result = app.ageRepository.fetchUpdate(page = page, size = 30)
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                currentTotal = result.total
+                currentPageSize = result.size
+                binding.pageTitle.text = "更新"
+                binding.pageSubtitle.text = "最近更新的动画作品"
+                showGrid(result.items, emptyMessage = "更新区暂时没有内容")
+                updatePagination(visible = result.total > result.size)
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, "更新加载失败", error)
+            }
         }
     }
 
@@ -392,21 +394,22 @@ class MainActivity : AppCompatActivity() {
         renderLoading("正在加载排行...")
         applyFilterActions(rankFilterActions(), showReset = false)
         updatePagination(visible = false)
-        loadJob?.cancel()
+        val requestId = replaceLoadRequest()
+        val year = rankYear
         loadJob = lifecycleScope.launch {
-            runCatching { app.ageRepository.fetchRankSections(rankYear) }
-                .onSuccess { sections ->
-                    binding.pageTitle.text = "排行"
-                    binding.pageSubtitle.text = if (rankYear == "all") {
-                        "站内热门 Top 榜单"
-                    } else {
-                        "$rankYear 年度热门榜单"
-                    }
-                    showSections(sections, emptyMessage = "排行榜暂时没有内容")
+            try {
+                val sections = app.ageRepository.fetchRankSections(year)
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                binding.pageTitle.text = "排行"
+                binding.pageSubtitle.text = if (year == "all") {
+                    "站内热门 Top 榜单"
+                } else {
+                    "$year 年度热门榜单"
                 }
-                .onFailure { error ->
-                    handleLoadFailure("排行加载失败", error)
-                }
+                showSections(sections, emptyMessage = "排行榜暂时没有内容")
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, "排行加载失败", error)
+            }
         }
     }
 
@@ -414,15 +417,13 @@ class MainActivity : AppCompatActivity() {
         renderLoading("正在读取观看记录...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        loadJob?.cancel()
-        loadJob = lifecycleScope.launch {
-            val history = app.playbackStore.getRecentRecords(60).map(::recordToCard)
-            currentTotal = history.size
-            currentPageSize = history.size.coerceAtLeast(1)
-            binding.pageTitle.text = "记录"
-            binding.pageSubtitle.text = "最近观看与续播历史"
-            showGrid(history, emptyMessage = "还没有播放记录")
-        }
+        replaceLoadRequest()
+        val history = app.playbackStore.getRecentRecords(60).map(::recordToCard)
+        currentTotal = history.size
+        currentPageSize = history.size.coerceAtLeast(1)
+        binding.pageTitle.text = "记录"
+        binding.pageSubtitle.text = "最近观看与续播历史"
+        showGrid(history, emptyMessage = "还没有播放记录")
     }
 
     private fun loadSearch(page: Int) {
@@ -434,20 +435,20 @@ class MainActivity : AppCompatActivity() {
         renderLoading("正在搜索「$query」...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        loadJob?.cancel()
+        val requestId = replaceLoadRequest()
         loadJob = lifecycleScope.launch {
-            runCatching { app.ageRepository.search(query = query, page = page, size = 24) }
-                .onSuccess { result ->
-                    currentTotal = result.total
-                    currentPageSize = result.size
-                    binding.pageTitle.text = "搜索"
-                    binding.pageSubtitle.text = "「$query」相关结果"
-                    showGrid(result.items, emptyMessage = "没有搜索到相关动画")
-                    updatePagination(visible = result.total > result.size)
-                }
-                .onFailure { error ->
-                    handleLoadFailure("搜索失败", error)
-                }
+            try {
+                val result = app.ageRepository.search(query = query, page = page, size = 24)
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                currentTotal = result.total
+                currentPageSize = result.size
+                binding.pageTitle.text = "搜索"
+                binding.pageSubtitle.text = "「$query」相关结果"
+                showGrid(result.items, emptyMessage = "没有搜索到相关动画")
+                updatePagination(visible = result.total > result.size)
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, "搜索失败", error)
+            }
         }
     }
 
@@ -548,9 +549,28 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
     }
 
-    private fun handleLoadFailure(prefix: String, error: Throwable) {
-        if (error is CancellationException) return
+    private fun replaceLoadRequest(): Long {
+        loadJob?.cancel()
+        return ++loadRequestId
+    }
+
+    private fun shouldHandleLoadResult(requestId: Long): Boolean {
+        return requestId == loadRequestId
+    }
+
+    private fun handleLoadFailure(requestId: Long, prefix: String, error: Throwable) {
+        if (requestId != loadRequestId || isCancellationError(error)) return
         showError("$prefix：${error.message.orEmpty()}")
+    }
+
+    private fun isCancellationError(error: Throwable?): Boolean {
+        var current = error
+        while (current != null) {
+            if (current is CancellationException) return true
+            if (current.message?.contains("was cancelled", ignoreCase = true) == true) return true
+            current = current.cause
+        }
+        return false
     }
 
     private fun updateBottomNav() {
