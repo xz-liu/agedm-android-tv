@@ -10,6 +10,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class MirrorState(
+    val query: String = "",
+    val results: List<MirrorItem> = emptyList(),
+)
+
+data class MirrorItem(
+    val animeId: Long,
+    val title: String,
+    val badge: String,
+)
 
 class LinkCastManager(private val repository: AgeRepository) {
     private var server: LinkCastHttpServer? = null
@@ -23,6 +36,9 @@ class LinkCastManager(private val repository: AgeRepository) {
 
     private val _status = MutableStateFlow("等待手机扫码后搜索或提交 AGE 链接")
     val status = _status.asStateFlow()
+
+    private val _mirrorState = MutableStateFlow(MirrorState())
+    val mirrorState = _mirrorState.asStateFlow()
 
     fun consumePendingRoute(): AgeRoute? {
         val route = _pendingRoute.value
@@ -40,7 +56,7 @@ class LinkCastManager(private val repository: AgeRepository) {
 
         for (port in 8383..8390) {
             try {
-                val candidate = LinkCastHttpServer(port, ::handleIncomingRoute, repository)
+                val candidate = LinkCastHttpServer(port, ::handleIncomingRoute, ::handleMirrorUpdate, repository)
                 candidate.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 server = candidate
                 serverUrl = "http://$localIp:$port/"
@@ -61,6 +77,10 @@ class LinkCastManager(private val repository: AgeRepository) {
         _incomingRoutes.tryEmit(route)
     }
 
+    private fun handleMirrorUpdate(state: MirrorState) {
+        _mirrorState.value = state
+    }
+
     private fun resolveLocalIpv4(): String? {
         val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
         interfaces.forEach { networkInterface ->
@@ -77,6 +97,7 @@ class LinkCastManager(private val repository: AgeRepository) {
     private class LinkCastHttpServer(
         port: Int,
         private val onRoute: (AgeRoute) -> Unit,
+        private val onMirrorUpdate: (MirrorState) -> Unit,
         private val repository: AgeRepository,
     ) : NanoHTTPD(port) {
 
@@ -84,6 +105,7 @@ class LinkCastManager(private val repository: AgeRepository) {
             return when {
                 session.method == Method.GET && session.uri == "/" -> html(rootPage())
                 session.method == Method.GET && session.uri == "/api/search" -> handleSearch(session)
+                session.method == Method.POST && session.uri == "/api/mirror" -> handleMirror(session)
                 session.method == Method.POST && session.uri == "/submit" -> handleSubmit(session)
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
             }
@@ -113,6 +135,31 @@ class LinkCastManager(private val repository: AgeRepository) {
                 json(array)
             } catch (_: Throwable) {
                 json("[]")
+            }
+        }
+
+        private fun handleMirror(session: IHTTPSession): Response {
+            val files = HashMap<String, String>()
+            return try {
+                session.parseBody(files)
+                val body = files["postData"] ?: return json("{\"ok\":true}")
+                val obj = JSONObject(body)
+                val query = obj.optString("query", "")
+                val arr = obj.optJSONArray("results") ?: JSONArray()
+                val items = buildList {
+                    for (i in 0 until arr.length()) {
+                        val r = arr.getJSONObject(i)
+                        add(MirrorItem(
+                            animeId = r.optLong("id"),
+                            title = r.optString("title", ""),
+                            badge = r.optString("badge", ""),
+                        ))
+                    }
+                }
+                onMirrorUpdate(MirrorState(query, items))
+                json("{\"ok\":true}")
+            } catch (_: Throwable) {
+                json("{\"ok\":true}")
             }
         }
 
@@ -179,13 +226,17 @@ class LinkCastManager(private val repository: AgeRepository) {
                     var spinner=document.getElementById('spinner');
                     var toast=document.getElementById('toast');
                     function doSearch(q){
-                      if(!q){list.innerHTML='';empty.style.display='none';spinner.style.display='none';return}
+                      if(!q){
+                        list.innerHTML='';empty.style.display='none';spinner.style.display='none';
+                        mirror('', []);
+                        return;
+                      }
                       spinner.style.display='block';list.innerHTML='';empty.style.display='none';
                       fetch('/api/search?q='+encodeURIComponent(q))
                         .then(function(r){return r.json()})
                         .then(function(items){
                           spinner.style.display='none';
-                          if(!items||items.length===0){empty.style.display='block';return}
+                          if(!items||items.length===0){empty.style.display='block';mirror(q,[]);return}
                           list.innerHTML=items.map(function(it){
                             return '<div class="item" onclick="send('+it.id+',\''+ej(it.title)+'\')">'+
                               '<img src="'+ea(it.cover)+'" loading="lazy" onerror="this.style.visibility=\'hidden\'"/>'+
@@ -194,6 +245,7 @@ class LinkCastManager(private val repository: AgeRepository) {
                                 (it.badge?'<div class="item-badge">'+eh(it.badge)+'</div>':'')+
                               '</div></div>'
                           }).join('');
+                          mirror(q, items);
                         })
                         .catch(function(){spinner.style.display='none';empty.style.display='block'});
                     }
@@ -203,6 +255,13 @@ class LinkCastManager(private val repository: AgeRepository) {
                         .then(function(r){return r.json()})
                         .then(function(res){showToast(res.ok?('已投送：'+title):'投送失败')})
                         .catch(function(){showToast('投送失败')});
+                    }
+                    function mirror(q,items){
+                      fetch('/api/mirror',{
+                        method:'POST',
+                        headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({query:q,results:items||[]})
+                      }).catch(function(){});
                     }
                     function showToast(msg){
                       toast.textContent=msg;toast.classList.add('show');

@@ -7,11 +7,17 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.os.Bundle
 import android.text.InputType
+import android.text.TextUtils
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
@@ -30,6 +36,8 @@ import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.BrowseSection
 import io.agedm.tv.data.CatalogQuery
+import io.agedm.tv.data.MirrorItem
+import io.agedm.tv.data.MirrorState
 import io.agedm.tv.data.PlaybackRecord
 import io.agedm.tv.databinding.ActivityMainBinding
 import io.agedm.tv.ui.adapter.BrowseSectionAdapter
@@ -316,6 +324,11 @@ class MainActivity : AppCompatActivity() {
             }
             updateFocusTargets()
             animateContentIn(binding.castContent)
+
+            // Collect mirror state; cancels automatically when loadJob is cancelled (user navigates away)
+            app.linkCastManager.mirrorState.collect { state ->
+                updateMirrorPanel(state)
+            }
         }
     }
 
@@ -826,6 +839,75 @@ class MainActivity : AppCompatActivity() {
         }
         return bitmap
     }
+
+    private fun updateMirrorPanel(state: MirrorState) {
+        val hasQuery = state.query.isNotBlank()
+        binding.mirrorQueryText.text = if (hasQuery) "「${state.query}」" else "等待手机搜索..."
+        binding.mirrorQueryText.setTextColor(
+            if (hasQuery) getColor(R.color.age_text) else getColor(R.color.age_text_muted),
+        )
+
+        binding.mirrorResultsList.removeAllViews()
+        if (state.results.isEmpty()) {
+            binding.mirrorResultsList.addView(
+                TextView(this).apply {
+                    text = if (hasQuery) "没有找到相关动画" else "搜索结果会实时显示在这里"
+                    setTextColor(getColor(R.color.age_text_muted))
+                    textSize = 13f
+                    setPadding(0, dpToPx(16), 0, 0)
+                },
+            )
+        } else {
+            state.results.forEachIndexed { index, item ->
+                if (index > 0) {
+                    binding.mirrorResultsList.addView(
+                        View(this).apply {
+                            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 1)
+                            setBackgroundColor(Color.parseColor("#1b3549"))
+                        },
+                    )
+                }
+                binding.mirrorResultsList.addView(createMirrorRow(item))
+            }
+        }
+
+        binding.mirrorResultsList.alpha = 0f
+        binding.mirrorResultsList.animate().alpha(1f).setDuration(160).start()
+    }
+
+    private fun createMirrorRow(item: MirrorItem): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            setPadding(0, dpToPx(11), 0, dpToPx(11))
+
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = item.title
+                    setTextColor(getColor(R.color.age_text))
+                    textSize = 13f
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                },
+            )
+            if (item.badge.isNotBlank()) {
+                addView(
+                    TextView(this@MainActivity).apply {
+                        text = item.badge
+                        setTextColor(Color.parseColor("#6ed9b8"))
+                        textSize = 11f
+                        layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).also {
+                            it.marginStart = dpToPx(10)
+                            it.gravity = Gravity.CENTER_VERTICAL
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun navigateBack() {
         when (currentScreen) {
