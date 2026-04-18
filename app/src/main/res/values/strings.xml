@@ -16,6 +16,8 @@
     <string name="btn_prev_page">上一页</string>
     <string name="btn_next_page">下一页</string>
     <string name="btn_play_now">立即播放</string>
+    <string name="btn_refresh_sources">刷新源</string>
+    <string name="btn_refreshing_sources">刷新中...</string>
     <string name="btn_play_pause">播放 / 暂停</string>
     <string name="btn_speed">倍速</string>
     <string name="btn_auto_next">自动下一集</string>

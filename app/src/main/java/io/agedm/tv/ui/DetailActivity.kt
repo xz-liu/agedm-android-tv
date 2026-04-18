@@ -45,6 +45,7 @@ class DetailActivity : AppCompatActivity() {
     private var selectedSourceIndex: Int = 0
     private var selectedEpisodeIndex: Int = 0
     private var supplementalSourceLoading = false
+    private var sourceRefreshLoading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,6 +109,7 @@ class DetailActivity : AppCompatActivity() {
                 preferredSourceKey = source.key,
             )
         }
+        binding.refreshSourcesButton.setOnClickListener { refreshSources() }
         binding.continueButton.setOnClickListener {
             val record = detail?.animeId?.let(app.playbackStore::getRecord) ?: return@setOnClickListener
             launchPlayer(
@@ -161,7 +163,12 @@ class DetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun bindDetail(loadedDetail: AnimeDetail, requestFocus: Boolean = false) {
+    private fun bindDetail(
+        loadedDetail: AnimeDetail,
+        requestFocus: Boolean = false,
+        preferredSourceKey: String? = null,
+        preferredEpisodeIndex: Int? = null,
+    ) {
         binding.loadingLayout.isVisible = false
         binding.errorText.isVisible = false
         binding.detailScrollView.isVisible = true
@@ -176,8 +183,25 @@ class DetailActivity : AppCompatActivity() {
         binding.coverImage.loadPosterImage(loadedDetail.cover)
 
         val record = app.playbackStore.getRecord(loadedDetail.animeId)
-        selectedSourceIndex = record?.sourceKey?.let(::selectedSourceIndexFor) ?: 0
-        selectedEpisodeIndex = record?.episodeIndex ?: 0
+        val resolvedSourceKey = preferredSourceKey
+            ?: record?.sourceKey
+            ?: loadedDetail.sources.firstOrNull()?.key
+        selectedSourceIndex = resolvedSourceKey
+            ?.let { sourceKey ->
+                loadedDetail.sources.indexOfFirst { it.key == sourceKey }
+                    .takeIf { it >= 0 }
+            }
+            ?: 0
+        val selectedSource = loadedDetail.sources.getOrNull(selectedSourceIndex)
+        selectedEpisodeIndex = when {
+            preferredEpisodeIndex != null -> {
+                preferredEpisodeIndex.coerceIn(0, selectedSource?.episodes?.lastIndex?.coerceAtLeast(0) ?: 0)
+            }
+            record != null && selectedSource != null && record.sourceKey == selectedSource.key -> {
+                record.episodeIndex.coerceIn(0, selectedSource.episodes.lastIndex.coerceAtLeast(0))
+            }
+            else -> 0
+        }
         bindSelectionPanels(preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key)
 
         relatedAdapter.submitList(loadedDetail.related.map(::toCard))
@@ -189,6 +213,7 @@ class DetailActivity : AppCompatActivity() {
 
         binding.continueButton.isVisible = record != null
         binding.continueButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: getString(io.agedm.tv.R.string.btn_continue)
+        updateRefreshSourcesButton()
         if (requestFocus) {
             binding.playButton.requestFocus()
         }
@@ -279,6 +304,66 @@ class DetailActivity : AppCompatActivity() {
                 ).show()
             }
         }
+    }
+
+    private fun refreshSources() {
+        if (sourceRefreshLoading) return
+        val currentDetail = detail ?: return
+        sourceRefreshLoading = true
+        updateRefreshSourcesButton()
+
+        val preferredSourceKey = currentDetail.sources.getOrNull(selectedSourceIndex)?.key
+        val preferredEpisodeIndex = selectedEpisodeIndex
+        val shouldRefreshSupplemental = currentDetail.sources.loadedSupplementalProviders().isNotEmpty()
+
+        lifecycleScope.launch {
+            runCatching {
+                val refreshedDetail = app.ageRepository.fetchDetail(
+                    animeId = currentDetail.animeId,
+                    forceRefresh = true,
+                )
+                val mergedSources = if (shouldRefreshSupplemental) {
+                    refreshedDetail.sources.mergeDistinctSources(
+                        app.ageRepository.fetchSupplementalSources(
+                            animeId = currentDetail.animeId,
+                            title = refreshedDetail.title,
+                        ),
+                    )
+                } else {
+                    refreshedDetail.sources
+                }
+                refreshedDetail.copy(
+                    sources = mergedSources.orderedByPriority(app.playbackStore.getSourcePriority()),
+                )
+            }.onSuccess { refreshedDetail ->
+                detail = refreshedDetail
+                bindDetail(
+                    loadedDetail = refreshedDetail,
+                    requestFocus = false,
+                    preferredSourceKey = preferredSourceKey,
+                    preferredEpisodeIndex = preferredEpisodeIndex,
+                )
+                binding.refreshSourcesButton.requestFocus()
+                Toast.makeText(this@DetailActivity, "已刷新播放源", Toast.LENGTH_SHORT).show()
+            }.onFailure { error ->
+                updateRefreshSourcesButton()
+                Toast.makeText(
+                    this@DetailActivity,
+                    "刷新源失败：${error.message.orEmpty()}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            sourceRefreshLoading = false
+            updateRefreshSourcesButton()
+        }
+    }
+
+    private fun updateRefreshSourcesButton() {
+        binding.refreshSourcesButton.text = getString(
+            if (sourceRefreshLoading) io.agedm.tv.R.string.btn_refreshing_sources
+            else io.agedm.tv.R.string.btn_refresh_sources,
+        )
+        binding.refreshSourcesButton.isEnabled = !sourceRefreshLoading
     }
 
     private fun focusSourceKey(sourceKey: String) {

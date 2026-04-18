@@ -28,11 +28,16 @@ class AgeRepository(
         )
     }
 
-    suspend fun fetchDetail(animeId: Long): AnimeDetail = withContext(Dispatchers.IO) {
-        val body = cachedGet("detail_$animeId", TTL_DETAIL_MS, apiUrl("detail/$animeId"))
+    suspend fun fetchDetail(animeId: Long, forceRefresh: Boolean = false): AnimeDetail = withContext(Dispatchers.IO) {
+        val body = cachedGet(
+            key = "detail_$animeId",
+            ttlMs = TTL_DETAIL_MS,
+            url = apiUrl("detail/$animeId"),
+            forceRefresh = forceRefresh,
+        )
         val response = json.decodeFromString<AgeDetailResponse>(body)
         val desktopRecommendations = runCatching {
-            fetchDesktopRecommendations(animeId)
+            fetchDesktopRecommendations(animeId, forceRefresh)
         }.getOrElse { emptyList() }
         val detail = response.toAnimeDetail(desktopRecommendations)
         val supplementalSources = supplementalSourceService.loadCachedSources(animeId)
@@ -306,8 +311,11 @@ class AgeRepository(
         ttlMs: Long,
         url: String,
         referer: String = MOBILE_REFERER,
+        forceRefresh: Boolean = false,
     ): String {
-        cache?.get(key, ttlMs)?.let { return it }
+        if (!forceRefresh) {
+            cache?.get(key, ttlMs)?.let { return it }
+        }
         val fresh = get(url, referer)
         cache?.put(key, fresh)
         return fresh
@@ -327,12 +335,13 @@ class AgeRepository(
         }
     }
 
-    private fun fetchDesktopRecommendations(animeId: Long): List<AgeRelatedItem> {
+    private fun fetchDesktopRecommendations(animeId: Long, forceRefresh: Boolean = false): List<AgeRelatedItem> {
         val html = cachedGet(
             key = "detail_desktop_$animeId",
             ttlMs = TTL_DETAIL_MS,
             url = desktopDetailUrl(animeId),
             referer = DESKTOP_REFERER,
+            forceRefresh = forceRefresh,
         )
         val document = Jsoup.parse(html)
         val section = document.selectFirst("div.video_list_box--hd:matchesOwn(^相关推荐$)")

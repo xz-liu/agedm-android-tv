@@ -142,6 +142,15 @@
                                 android:textColor="@color/age_text" />
 
                             <Button
+                                android:id="@+id/refreshSourcesButton"
+                                android:layout_width="wrap_content"
+                                android:layout_height="52dp"
+                                android:layout_marginStart="10dp"
+                                android:background="@drawable/bg_focusable_small"
+                                android:text="@string/btn_refresh_sources"
+                                android:textColor="@color/age_text" />
+
+                            <Button
                                 android:id="@+id/continueButton"
                                 android:layout_width="wrap_content"
                                 android:layout_height="52dp"
