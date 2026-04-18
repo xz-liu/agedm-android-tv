@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.text.TextUtils
@@ -91,6 +92,7 @@ class MainActivity : AppCompatActivity() {
     private var catalogQuery = CatalogQuery()
     private var rankYear = "all"
     private var currentCastUrl: String? = null
+    private var navIndicator: View? = null
     private var loadJob: Job? = null
     private var loadRequestId: Long = 0L
     private var overlayJob: Job? = null
@@ -196,6 +198,7 @@ class MainActivity : AppCompatActivity() {
         ).forEach { it.onFocusChangeListener = focusListener }
 
         configureNavWrapAround()
+        setupNavIndicator()
         updateBottomNav()
     }
 
@@ -601,6 +604,49 @@ class MainActivity : AppCompatActivity() {
         binding.navUpdateButton.isSelected = currentScreen == Screen.UPDATE
         binding.navRankButton.isSelected = currentScreen == Screen.RANK
         binding.navHistoryButton.isSelected = currentScreen == Screen.HISTORY
+        if (currentScreen != Screen.SEARCH) slideNavIndicatorTo(currentNavButton())
+    }
+
+    private fun setupNavIndicator() {
+        val indicatorHeight = dpToPx(3)
+        val pill = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.parseColor("#6ED9B8"))
+                cornerRadius = dpToPx(2).toFloat()
+            }
+        }
+        navIndicator = pill
+        binding.bottomNav.post {
+            val rect = buttonBoundsInNav(currentNavButton())
+            if (rect.width() > 0) {
+                pill.layout(rect.left, rect.bottom, rect.right, rect.bottom + indicatorHeight)
+                binding.bottomNav.overlay.add(pill)
+            }
+        }
+    }
+
+    private fun slideNavIndicatorTo(target: Button) {
+        val pill = navIndicator ?: return
+        val rect = buttonBoundsInNav(target)
+        if (rect.width() == 0) return
+        if (!pill.isAttachedToWindow) {
+            pill.layout(rect.left, rect.bottom, rect.right, rect.bottom + dpToPx(3))
+            binding.bottomNav.overlay.add(pill)
+            return
+        }
+        pill.animate().cancel()
+        pill.animate()
+            .x(rect.left.toFloat())
+            .setDuration(260)
+            .setInterpolator(DecelerateInterpolator(2f))
+            .start()
+    }
+
+    private fun buttonBoundsInNav(button: Button): Rect {
+        val rect = Rect(0, 0, button.width, button.height)
+        binding.bottomNav.offsetDescendantRectToMyCoords(button, rect)
+        return rect
     }
 
     private fun updatePagination(visible: Boolean) {
