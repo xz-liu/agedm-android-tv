@@ -10,6 +10,14 @@ fun List<EpisodeSource>.mergeDistinctSources(extraSources: List<EpisodeSource>):
     return this + appended
 }
 
+fun List<EpisodeSource>.replaceSourcesForProvider(
+    providerId: String,
+    replacement: List<EpisodeSource>,
+): List<EpisodeSource> {
+    val normalizedProvider = normalizeSourceProvider(providerId)
+    return filterNot { normalizeSourceProvider(it.providerName) == normalizedProvider } + replacement
+}
+
 fun List<EpisodeSource>.orderedByPriority(priority: List<String>): List<EpisodeSource> {
     val priorityMap = priority
         .mapIndexed { index, provider -> normalizeSourceProvider(provider) to index }

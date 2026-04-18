@@ -95,6 +95,8 @@ class PlayerActivity : AppCompatActivity() {
     private var detail: AnimeDetail? = null
     private var currentSourceIndex: Int = 0
     private var currentEpisodeIndex: Int = 0
+    private var drawerPreviewSourceIndex: Int = 0
+    private var drawerPreviewEpisodeIndex: Int = 0
     private var currentSource: EpisodeSource? = null
     private var currentEpisode: EpisodeItem? = null
     private var deferredSeekMs: Long = 0L
@@ -365,18 +367,29 @@ class PlayerActivity : AppCompatActivity() {
         sourceAdapter = SourceAdapter(
             onSelected = { source ->
                 val targetIndex = detail?.sources?.indexOfFirst { it.key == source.key } ?: -1
-                if (targetIndex >= 0 && targetIndex != currentSourceIndex) {
+                val targetEpisodeIndex = if (targetIndex == drawerPreviewSourceIndex) {
+                    drawerPreviewEpisodeIndex
+                } else {
+                    resolveDrawerPreviewEpisodeIndex(targetIndex)
+                }
+                if (targetIndex >= 0 && (targetIndex != currentSourceIndex || targetEpisodeIndex != currentEpisodeIndex)) {
                     persistCurrentProgress()
-                    beginPlayback(targetIndex, 0, 0L)
+                    beginPlayback(targetIndex, targetEpisodeIndex, 0L)
+                }
+            },
+            onFocused = { source ->
+                val targetIndex = detail?.sources?.indexOfFirst { it.key == source.key } ?: -1
+                if (targetIndex >= 0) {
+                    previewDrawerSource(targetIndex)
                 }
             },
             onAction = ::loadSupplementalSourcesManually,
         )
 
         episodeAdapter = EpisodeAdapter { episode ->
-            if (episode.index != currentEpisodeIndex) {
+            if (drawerPreviewSourceIndex != currentSourceIndex || episode.index != currentEpisodeIndex) {
                 persistCurrentProgress()
-                beginPlayback(currentSourceIndex, episode.index, 0L)
+                beginPlayback(drawerPreviewSourceIndex, episode.index, 0L)
             }
         }
 
@@ -1184,14 +1197,63 @@ class PlayerActivity : AppCompatActivity() {
         val currentKey = currentSource?.key
         sourceAdapter.submitList(loadedDetail.sources, currentKey, sourceActionLabel(loadedDetail))
 
-        val selectedSource = loadedDetail.sources.getOrNull(currentSourceIndex)
-        if (selectedSource != null) {
-            episodeAdapter.submitList(selectedSource.episodes, currentEpisodeIndex)
-        } else {
-            episodeAdapter.submitList(emptyList(), 0)
+        if (drawerPreviewSourceIndex !in loadedDetail.sources.indices) {
+            drawerPreviewSourceIndex = currentSourceIndex
         }
+        drawerPreviewEpisodeIndex = resolveDrawerPreviewEpisodeIndex(drawerPreviewSourceIndex)
+        renderDrawerEpisodePreview(animate = false, direction = 1)
 
         focusSourceKey?.let(::focusSourceKey)
+    }
+
+    private fun previewDrawerSource(targetIndex: Int) {
+        val loadedDetail = detail ?: return
+        if (targetIndex !in loadedDetail.sources.indices || targetIndex == drawerPreviewSourceIndex) return
+
+        val direction = targetIndex.compareTo(drawerPreviewSourceIndex).takeIf { it != 0 } ?: 1
+        drawerPreviewSourceIndex = targetIndex
+        drawerPreviewEpisodeIndex = resolveDrawerPreviewEpisodeIndex(targetIndex)
+        renderDrawerEpisodePreview(animate = true, direction = direction)
+    }
+
+    private fun resolveDrawerPreviewEpisodeIndex(sourceIndex: Int): Int {
+        val source = detail?.sources?.getOrNull(sourceIndex) ?: return 0
+        return currentEpisodeIndex.coerceIn(0, source.episodes.lastIndex.coerceAtLeast(0))
+    }
+
+    private fun renderDrawerEpisodePreview(animate: Boolean, direction: Int) {
+        val source = detail?.sources?.getOrNull(drawerPreviewSourceIndex)
+        if (source == null) {
+            episodeAdapter.submitList(emptyList(), 0)
+            return
+        }
+        val applyContent = {
+            episodeAdapter.submitList(source.episodes, drawerPreviewEpisodeIndex)
+            binding.episodeRecycler.scrollToPosition(drawerPreviewEpisodeIndex)
+        }
+        if (!animate || !binding.episodeRecycler.isLaidOut) {
+            binding.episodeRecycler.translationX = 0f
+            binding.episodeRecycler.alpha = 1f
+            applyContent()
+            return
+        }
+
+        val offset = if (direction >= 0) 40f else -40f
+        binding.episodeRecycler.animate().cancel()
+        binding.episodeRecycler.animate()
+            .translationX(-offset * 0.35f)
+            .alpha(0.25f)
+            .setDuration(90L)
+            .withEndAction {
+                binding.episodeRecycler.translationX = offset
+                applyContent()
+                binding.episodeRecycler.animate()
+                    .translationX(0f)
+                    .alpha(1f)
+                    .setDuration(180L)
+                    .start()
+            }
+            .start()
     }
 
     private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
@@ -1308,6 +1370,9 @@ class PlayerActivity : AppCompatActivity() {
         binding.topInfoContainer.isVisible = true
         binding.bottomControlContainer.isVisible = false
         binding.episodeDrawer.isVisible = true
+        drawerPreviewSourceIndex = currentSourceIndex
+        drawerPreviewEpisodeIndex = currentEpisodeIndex
+        renderDrawerEpisodePreview(animate = false, direction = 1)
         scrollEpisodeIntoView()
         binding.episodeRecycler.post {
             binding.episodeRecycler.findViewHolderForAdapterPosition(currentEpisodeIndex)

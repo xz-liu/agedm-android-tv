@@ -12,6 +12,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AgeRelatedItem
@@ -20,9 +21,11 @@ import io.agedm.tv.data.AnimeDetail
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.SUPPLEMENTAL_PROVIDER_IDS
+import io.agedm.tv.data.isAgeSource
 import io.agedm.tv.data.loadedSupplementalProviders
 import io.agedm.tv.data.mergeDistinctSources
 import io.agedm.tv.data.orderedByPriority
+import io.agedm.tv.data.replaceSourcesForProvider
 import kotlinx.coroutines.flow.collectLatest
 import io.agedm.tv.databinding.ActivityDetailBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
@@ -44,8 +47,11 @@ class DetailActivity : AppCompatActivity() {
     private var detail: AnimeDetail? = null
     private var selectedSourceIndex: Int = 0
     private var selectedEpisodeIndex: Int = 0
+    private var previewSourceIndex: Int = 0
+    private var previewEpisodeIndex: Int = 0
     private var supplementalSourceLoading = false
     private var sourceRefreshLoading = false
+    private var sourceMatchDialogLoading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,7 +71,11 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun setupLists() {
-        sourceAdapter = SourceAdapter(::onSourceSelected, ::onLoadSupplementalSources)
+        sourceAdapter = SourceAdapter(
+            onSelected = ::onSourceSelected,
+            onFocused = ::onSourceFocused,
+            onAction = ::onLoadSupplementalSources,
+        )
         episodeAdapter = EpisodeAdapter(::onEpisodeSelected)
         relatedAdapter = PosterCardAdapter { openDetail(it.animeId) }
         similarAdapter = PosterCardAdapter { openDetail(it.animeId) }
@@ -183,26 +193,16 @@ class DetailActivity : AppCompatActivity() {
         binding.coverImage.loadPosterImage(loadedDetail.cover)
 
         val record = app.playbackStore.getRecord(loadedDetail.animeId)
-        val resolvedSourceKey = preferredSourceKey
-            ?: record?.sourceKey
-            ?: loadedDetail.sources.firstOrNull()?.key
-        selectedSourceIndex = resolvedSourceKey
-            ?.let { sourceKey ->
-                loadedDetail.sources.indexOfFirst { it.key == sourceKey }
-                    .takeIf { it >= 0 }
-            }
-            ?: 0
+        val resolvedSourceKey = preferredSourceKey ?: record?.sourceKey ?: loadedDetail.sources.firstOrNull()?.key
+        selectedSourceIndex = resolveSourceIndex(loadedDetail, resolvedSourceKey)
         val selectedSource = loadedDetail.sources.getOrNull(selectedSourceIndex)
-        selectedEpisodeIndex = when {
-            preferredEpisodeIndex != null -> {
-                preferredEpisodeIndex.coerceIn(0, selectedSource?.episodes?.lastIndex?.coerceAtLeast(0) ?: 0)
-            }
-            record != null && selectedSource != null && record.sourceKey == selectedSource.key -> {
-                record.episodeIndex.coerceIn(0, selectedSource.episodes.lastIndex.coerceAtLeast(0))
-            }
-            else -> 0
-        }
-        bindSelectionPanels(preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key)
+        selectedEpisodeIndex = resolveEpisodeIndex(selectedSource, preferredEpisodeIndex)
+        previewSourceIndex = selectedSourceIndex
+        previewEpisodeIndex = selectedEpisodeIndex
+        bindSelectionPanels(
+            preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key,
+            previewSourceKey = loadedDetail.sources.getOrNull(previewSourceIndex)?.key,
+        )
 
         relatedAdapter.submitList(loadedDetail.related.map(::toCard))
         similarAdapter.submitList(loadedDetail.similar.map(::toCard))
@@ -222,19 +222,13 @@ class DetailActivity : AppCompatActivity() {
     private fun bindSelectionPanels(
         preferredSourceKey: String? = null,
         focusSourceKey: String? = null,
+        previewSourceKey: String? = null,
+        animatePreview: Boolean = false,
     ) {
         val loadedDetail = detail ?: return
         binding.pageSubtitle.text = "共 ${loadedDetail.sources.sumOf { it.episodes.size }} 个可选分集"
 
-        val resolvedSourceIndex = preferredSourceKey
-            ?.let { sourceKey ->
-                loadedDetail.sources.indexOfFirst { it.key == sourceKey }
-                    .takeIf { it >= 0 }
-            }
-            ?: selectedSourceIndex
-                .coerceIn(0, loadedDetail.sources.lastIndex.coerceAtLeast(0))
-
-        selectedSourceIndex = resolvedSourceIndex.takeIf { loadedDetail.sources.isNotEmpty() } ?: 0
+        selectedSourceIndex = resolveSourceIndex(loadedDetail, preferredSourceKey)
         val selectedSource = loadedDetail.sources.getOrNull(selectedSourceIndex)
         if (selectedSource == null) {
             sourceAdapter.submitList(emptyList(), null, sourceActionLabel(loadedDetail))
@@ -242,18 +236,80 @@ class DetailActivity : AppCompatActivity() {
             return
         }
 
-        val record = app.playbackStore.getRecord(loadedDetail.animeId)
-        selectedEpisodeIndex = record?.takeIf { it.sourceKey == selectedSource.key }
-            ?.episodeIndex
-            ?.coerceIn(0, selectedSource.episodes.lastIndex.coerceAtLeast(0))
-            ?: selectedEpisodeIndex.coerceIn(0, selectedSource.episodes.lastIndex.coerceAtLeast(0))
-
+        selectedEpisodeIndex = resolveEpisodeIndex(selectedSource, selectedEpisodeIndex)
         sourceAdapter.submitList(loadedDetail.sources, selectedSource.key, sourceActionLabel(loadedDetail))
-        episodeAdapter.submitList(selectedSource.episodes, selectedEpisodeIndex)
         binding.sourceRecycler.scrollToPosition(selectedSourceIndex)
-        binding.episodeRecycler.scrollToPosition(selectedEpisodeIndex)
+
+        val previousPreviewIndex = previewSourceIndex
+        previewSourceIndex = resolveSourceIndex(loadedDetail, previewSourceKey ?: selectedSource.key)
+        val previewSource = loadedDetail.sources.getOrNull(previewSourceIndex) ?: selectedSource
+        previewEpisodeIndex = if (previewSource.key == selectedSource.key) {
+            selectedEpisodeIndex
+        } else {
+            resolveEpisodeIndex(previewSource, previewEpisodeIndex)
+        }
+        renderEpisodePreview(
+            source = previewSource,
+            animate = animatePreview,
+            direction = previewSourceIndex.compareTo(previousPreviewIndex).takeIf { it != 0 } ?: 1,
+        )
 
         focusSourceKey?.let(::focusSourceKey)
+    }
+
+    private fun resolveSourceIndex(loadedDetail: AnimeDetail, preferredSourceKey: String?): Int {
+        return preferredSourceKey
+            ?.let { sourceKey ->
+                loadedDetail.sources.indexOfFirst { it.key == sourceKey }
+                    .takeIf { it >= 0 }
+            }
+            ?: selectedSourceIndex.coerceIn(0, loadedDetail.sources.lastIndex.coerceAtLeast(0))
+    }
+
+    private fun resolveEpisodeIndex(source: EpisodeSource?, preferredEpisodeIndex: Int? = null): Int {
+        if (source == null || source.episodes.isEmpty()) return 0
+        preferredEpisodeIndex?.let { index ->
+            return index.coerceIn(0, source.episodes.lastIndex)
+        }
+        val record = detail?.animeId?.let(app.playbackStore::getRecord)
+        if (record != null && record.sourceKey == source.key) {
+            return record.episodeIndex.coerceIn(0, source.episodes.lastIndex)
+        }
+        return 0
+    }
+
+    private fun renderEpisodePreview(
+        source: EpisodeSource,
+        animate: Boolean,
+        direction: Int,
+    ) {
+        val applyContent = {
+            episodeAdapter.submitList(source.episodes, previewEpisodeIndex)
+            binding.episodeRecycler.scrollToPosition(previewEpisodeIndex)
+        }
+        if (!animate || !binding.episodeRecycler.isLaidOut) {
+            binding.episodeRecycler.translationX = 0f
+            binding.episodeRecycler.alpha = 1f
+            applyContent()
+            return
+        }
+
+        val offset = if (direction >= 0) 44f else -44f
+        binding.episodeRecycler.animate().cancel()
+        binding.episodeRecycler.animate()
+            .translationX(-offset * 0.35f)
+            .alpha(0.25f)
+            .setDuration(90L)
+            .withEndAction {
+                binding.episodeRecycler.translationX = offset
+                applyContent()
+                binding.episodeRecycler.animate()
+                    .translationX(0f)
+                    .alpha(1f)
+                    .setDuration(180L)
+                    .start()
+            }
+            .start()
     }
 
     private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
@@ -379,29 +435,138 @@ class DetailActivity : AppCompatActivity() {
         }
     }
 
+    private fun onSourceFocused(source: EpisodeSource) {
+        val loadedDetail = detail ?: return
+        val index = loadedDetail.sources.indexOfFirst { it.key == source.key }
+        if (index < 0 || index == previewSourceIndex) return
+
+        val direction = index.compareTo(previewSourceIndex).takeIf { it != 0 } ?: 1
+        previewSourceIndex = index
+        previewEpisodeIndex = if (index == selectedSourceIndex) {
+            selectedEpisodeIndex
+        } else {
+            resolveEpisodeIndex(source)
+        }
+        renderEpisodePreview(source = source, animate = true, direction = direction)
+    }
+
     private fun onSourceSelected(source: EpisodeSource) {
         val loadedDetail = detail ?: return
         val index = loadedDetail.sources.indexOfFirst { it.key == source.key }
         if (index < 0) return
         selectedSourceIndex = index
-        selectedEpisodeIndex = app.playbackStore.getRecord(loadedDetail.animeId)
-            ?.takeIf { it.sourceKey == source.key }
-            ?.episodeIndex
-            ?.coerceIn(0, source.episodes.lastIndex)
-            ?: 0
-        bindSelectionPanels(preferredSourceKey = source.key)
+        selectedEpisodeIndex = if (previewSourceIndex == index) {
+            previewEpisodeIndex.coerceIn(0, source.episodes.lastIndex.coerceAtLeast(0))
+        } else {
+            resolveEpisodeIndex(source)
+        }
+        bindSelectionPanels(preferredSourceKey = source.key, previewSourceKey = source.key)
+
+        if (!source.isAgeSource()) {
+            showExternalMatchChooser(source)
+        }
     }
 
     private fun onEpisodeSelected(episode: EpisodeItem) {
         val loadedDetail = detail ?: return
-        val source = loadedDetail.sources.getOrNull(selectedSourceIndex) ?: return
+        val source = loadedDetail.sources.getOrNull(previewSourceIndex) ?: return
+        selectedSourceIndex = previewSourceIndex
         selectedEpisodeIndex = episode.index
-        episodeAdapter.submitList(source.episodes, selectedEpisodeIndex)
+        previewEpisodeIndex = episode.index
+        sourceAdapter.submitList(loadedDetail.sources, source.key, sourceActionLabel(loadedDetail))
+        renderEpisodePreview(source = source, animate = false, direction = 1)
         launchPlayer(
-            sourceIndex = selectedSourceIndex,
+            sourceIndex = previewSourceIndex,
             episodeIndex = episode.index,
             preferredSourceKey = source.key,
         )
+    }
+
+    private fun showExternalMatchChooser(source: EpisodeSource) {
+        if (sourceMatchDialogLoading) return
+        val loadedDetail = detail ?: return
+        sourceMatchDialogLoading = true
+        Toast.makeText(this, "正在检索 ${source.providerName} 对应动画...", Toast.LENGTH_SHORT).show()
+
+        lifecycleScope.launch {
+            runCatching {
+                app.ageRepository.searchSupplementalCandidates(
+                    providerId = source.providerName,
+                    title = loadedDetail.title,
+                )
+            }.onSuccess { rawCandidates ->
+                sourceMatchDialogLoading = false
+                val candidates = rawCandidates
+                    .sortedByDescending { candidate -> if (candidate.title == source.matchTitle) 1 else 0 }
+                if (candidates.isEmpty()) {
+                    Toast.makeText(this@DetailActivity, "没有找到可更正的候选动画", Toast.LENGTH_SHORT).show()
+                    return@onSuccess
+                }
+
+                val labels = candidates.map { candidate ->
+                    if (candidate.title == source.matchTitle) "${candidate.title}（当前自动匹配）" else candidate.title
+                }.toTypedArray()
+                val checkedIndex = candidates.indexOfFirst { it.title == source.matchTitle }.coerceAtLeast(0)
+
+                MaterialAlertDialogBuilder(this@DetailActivity)
+                    .setTitle("选择 ${source.providerName} 对应动画")
+                    .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
+                        dialog.dismiss()
+                        applyExternalMatchChoice(source, candidates[which])
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }.onFailure { error ->
+                sourceMatchDialogLoading = false
+                Toast.makeText(
+                    this@DetailActivity,
+                    "检索候选动画失败：${error.message.orEmpty()}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
+
+    private fun applyExternalMatchChoice(source: EpisodeSource, candidate: io.agedm.tv.data.SupplementalCandidate) {
+        val currentDetail = detail ?: return
+        Toast.makeText(this, "正在切换到 ${candidate.title}", Toast.LENGTH_SHORT).show()
+
+        lifecycleScope.launch {
+            runCatching {
+                app.ageRepository.fetchSupplementalSourcesForCandidate(
+                    animeId = currentDetail.animeId,
+                    candidate = candidate,
+                )
+            }.onSuccess { providerSources ->
+                if (providerSources.isEmpty()) {
+                    Toast.makeText(this@DetailActivity, "没有找到可用播放列表", Toast.LENGTH_SHORT).show()
+                    return@onSuccess
+                }
+                val refreshedDetail = detail?.takeIf { it.animeId == currentDetail.animeId } ?: return@onSuccess
+                val mergedSources = refreshedDetail.sources
+                    .replaceSourcesForProvider(source.providerName, providerSources)
+                    .orderedByPriority(app.playbackStore.getSourcePriority())
+                detail = refreshedDetail.copy(sources = mergedSources)
+
+                val targetKey = providerSources.first().key
+                selectedSourceIndex = mergedSources.indexOfFirst { it.key == targetKey }.coerceAtLeast(0)
+                selectedEpisodeIndex = 0
+                previewSourceIndex = selectedSourceIndex
+                previewEpisodeIndex = 0
+                bindSelectionPanels(
+                    preferredSourceKey = targetKey,
+                    focusSourceKey = targetKey,
+                    previewSourceKey = targetKey,
+                )
+                Toast.makeText(this@DetailActivity, "已切换到 ${candidate.title}", Toast.LENGTH_SHORT).show()
+            }.onFailure { error ->
+                Toast.makeText(
+                    this@DetailActivity,
+                    "切换匹配动画失败：${error.message.orEmpty()}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
     }
 
     private fun selectedSourceIndexFor(sourceKey: String): Int {

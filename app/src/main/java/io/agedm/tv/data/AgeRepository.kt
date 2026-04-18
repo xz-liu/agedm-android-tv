@@ -117,6 +117,26 @@ class AgeRepository(
         )
     }
 
+    suspend fun searchSupplementalCandidates(
+        providerId: String,
+        title: String,
+    ): List<SupplementalCandidate> = withContext(Dispatchers.IO) {
+        supplementalSourceService.searchCandidates(
+            providerId = providerId,
+            title = title,
+        )
+    }
+
+    suspend fun fetchSupplementalSourcesForCandidate(
+        animeId: Long,
+        candidate: SupplementalCandidate,
+    ): List<EpisodeSource> = withContext(Dispatchers.IO) {
+        supplementalSourceService.fetchSourcesForCandidate(
+            animeId = animeId,
+            candidate = candidate,
+        )
+    }
+
     suspend fun peekHomeFeed(): HomeFeed? = withContext(Dispatchers.IO) {
         peekCached(homeCacheKey(), ::decodeHomeFeed)
     }

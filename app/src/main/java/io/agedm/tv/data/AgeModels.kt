@@ -81,12 +81,20 @@ data class EpisodeSource(
     val providerName: String = "AGE",
     val resolver: SourceResolver = SourceResolver.AGE_PARSER,
     val pageHeaders: Map<String, String> = emptyMap(),
+    val matchTitle: String? = null,
 )
 
 data class EpisodeItem(
     val index: Int,
     val label: String,
     val token: String,
+)
+
+data class SupplementalCandidate(
+    val providerId: String,
+    val providerDisplayName: String,
+    val title: String,
+    val url: String,
 )
 
 @Serializable

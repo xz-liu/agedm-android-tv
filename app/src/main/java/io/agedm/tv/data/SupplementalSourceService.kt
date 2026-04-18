@@ -2,6 +2,7 @@ package io.agedm.tv.data
 
 import java.io.IOException
 import java.net.URLEncoder
+import java.util.Locale
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -22,6 +23,19 @@ internal class SupplementalSourceService(
         return decodeSources(body)
     }
 
+    fun searchCandidates(providerId: String, title: String): List<SupplementalCandidate> {
+        val provider = providers.firstOrNull { it.id == normalizeSourceProvider(providerId) } ?: return emptyList()
+        if (title.isBlank()) return emptyList()
+        return searchMatches(provider, title).map { match ->
+            SupplementalCandidate(
+                providerId = provider.id,
+                providerDisplayName = provider.displayName,
+                title = match.title,
+                url = match.url,
+            )
+        }
+    }
+
     fun fetchSources(
         animeId: Long,
         title: String,
@@ -37,26 +51,32 @@ internal class SupplementalSourceService(
         }
 
         if (sources.isNotEmpty()) {
-            val payload = SupplementalSourceCache(
-                sources = sources.map { source ->
-                    SupplementalSourceEntry(
-                        key = source.key,
-                        label = source.label,
-                        providerId = source.providerName,
-                        episodes = source.episodes.map { episode ->
-                            SupplementalEpisodeEntry(
-                                label = episode.label,
-                                token = episode.token,
-                            )
-                        },
-                    )
-                },
-            )
-            cache?.put(cacheKey(animeId), json.encodeToString(payload))
+            writeSourcesToCache(animeId, sources)
             return sources
         }
 
         return stale
+    }
+
+    fun fetchSourcesForCandidate(
+        animeId: Long,
+        candidate: SupplementalCandidate,
+    ): List<EpisodeSource> {
+        val provider = providers.firstOrNull { it.id == normalizeSourceProvider(candidate.providerId) }
+            ?: return emptyList()
+        val freshSources = fetchProviderSources(
+            provider = provider,
+            match = ProviderMatch(
+                title = candidate.title,
+                url = candidate.url,
+            ),
+        )
+        if (freshSources.isEmpty()) return emptyList()
+
+        val mergedSources = loadCachedSources(animeId)
+            .replaceSourcesForProvider(provider.id, freshSources)
+        writeSourcesToCache(animeId, mergedSources)
+        return freshSources
     }
 
     private fun decodeSources(body: String): List<EpisodeSource> {
@@ -81,6 +101,7 @@ internal class SupplementalSourceService(
                 providerName = provider.id,
                 resolver = SourceResolver.WEB_PAGE,
                 pageHeaders = provider.pageHeaders(),
+                matchTitle = entry.matchTitle,
             )
         }
     }
@@ -90,12 +111,20 @@ internal class SupplementalSourceService(
         title: String,
     ): List<EpisodeSource> {
         val match = searchBestMatch(provider, title) ?: return emptyList()
+        return fetchProviderSources(provider, match)
+    }
+
+    private fun fetchProviderSources(
+        provider: ProviderConfig,
+        match: ProviderMatch,
+    ): List<EpisodeSource> {
         val roads = fetchRoads(provider, match.url)
+        val matchKey = buildMatchKey(match.url)
         return roads.mapIndexedNotNull { roadIndex, road ->
             if (road.episodes.isEmpty()) return@mapIndexedNotNull null
 
             EpisodeSource(
-                key = "ext_${provider.id}_${roadIndex + 1}",
+                key = "ext_${provider.id}_${matchKey}_${roadIndex + 1}",
                 label = "${provider.displayName} · 播放列表${roadIndex + 1}",
                 isVipLike = false,
                 episodes = road.episodes.mapIndexed { index, episode ->
@@ -108,15 +137,22 @@ internal class SupplementalSourceService(
                 providerName = provider.id,
                 resolver = SourceResolver.WEB_PAGE,
                 pageHeaders = provider.pageHeaders(),
+                matchTitle = match.title,
             )
         }
     }
 
     private fun searchBestMatch(provider: ProviderConfig, title: String): ProviderMatch? {
+        return searchMatches(provider, title)
+            .maxByOrNull { scoreTitleMatch(title, it.title) }
+            ?.takeIf { scoreTitleMatch(title, it.title) > 0 }
+    }
+
+    private fun searchMatches(provider: ProviderConfig, title: String): List<ProviderMatch> {
         val encoded = URLEncoder.encode(title, Charsets.UTF_8.name())
         val url = provider.searchUrl.replace("@keyword", encoded)
         val document = fetchDocument(url, provider.baseUrl)
-        val items = document.selectXpath(provider.searchListXpath)
+        return document.selectXpath(provider.searchListXpath)
             .mapNotNull { element ->
                 val name = element.selectXpath(relativeXpath(provider.searchNameXpath), Element::class.java)
                     .firstOrNull()
@@ -136,9 +172,6 @@ internal class SupplementalSourceService(
                     )
                 }
             }
-
-        return items.maxByOrNull { scoreTitleMatch(title, it.title) }
-            ?.takeIf { scoreTitleMatch(title, it.title) > 0 }
     }
 
     private fun fetchRoads(provider: ProviderConfig, detailUrl: String): List<ProviderRoad> {
@@ -265,6 +298,35 @@ internal class SupplementalSourceService(
         )
     }
 
+    private fun writeSourcesToCache(animeId: Long, sources: List<EpisodeSource>) {
+        val payload = SupplementalSourceCache(
+            sources = sources.map { source ->
+                SupplementalSourceEntry(
+                    key = source.key,
+                    label = source.label,
+                    providerId = source.providerName,
+                    matchTitle = source.matchTitle,
+                    episodes = source.episodes.map { episode ->
+                        SupplementalEpisodeEntry(
+                            label = episode.label,
+                            token = episode.token,
+                        )
+                    },
+                )
+            },
+        )
+        cache?.put(cacheKey(animeId), json.encodeToString(payload))
+    }
+
+    private fun buildMatchKey(url: String): String {
+        val tail = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        if (tail.isNotBlank()) return tail
+        return url.lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]+"), "_")
+            .trim('_')
+            .ifBlank { "match" }
+    }
+
     private fun cacheKey(animeId: Long): String = "supplemental_$animeId"
 
     @Serializable
@@ -277,6 +339,7 @@ internal class SupplementalSourceService(
         val key: String,
         val label: String,
         val providerId: String,
+        val matchTitle: String? = null,
         val episodes: List<SupplementalEpisodeEntry> = emptyList(),
     )
 
@@ -330,7 +393,7 @@ internal class SupplementalSourceService(
             ),
             ProviderConfig(
                 id = "aafun",
-                displayName = "aafun",
+                displayName = "AAFun",
                 baseUrl = "https://www.aafun.cc/",
                 searchUrl = "https://www.aafun.cc/feng-s.html?wd=@keyword&submit=",
                 searchListXpath = "//div/div[2]/div/div[2]/div/div/div[1]/div/div[2]/div/ul/li",

@@ -9,6 +9,7 @@ import io.agedm.tv.databinding.ItemSourceBinding
 
 class SourceAdapter(
     private val onSelected: (EpisodeSource) -> Unit,
+    private val onFocused: (EpisodeSource) -> Unit = {},
     private val onAction: (() -> Unit)? = null,
 ) : RecyclerView.Adapter<SourceAdapter.SourceViewHolder>() {
 
@@ -58,6 +59,11 @@ class SourceAdapter(
                     }
                     binding.sourceText.isSelected = selected
                     binding.sourceText.setTextColor(if (selected) Color.parseColor("#052016") else Color.WHITE)
+                    binding.sourceText.setOnFocusChangeListener { _, hasFocus ->
+                        if (hasFocus) {
+                            onFocused(item.source)
+                        }
+                    }
                     binding.sourceText.setOnClickListener { onSelected(item.source) }
                 }
 
@@ -65,6 +71,7 @@ class SourceAdapter(
                     binding.sourceText.text = item.label
                     binding.sourceText.isSelected = false
                     binding.sourceText.setTextColor(Color.parseColor("#6ED9B8"))
+                    binding.sourceText.setOnFocusChangeListener(null)
                     binding.sourceText.setOnClickListener { onAction?.invoke() }
                 }
             }
