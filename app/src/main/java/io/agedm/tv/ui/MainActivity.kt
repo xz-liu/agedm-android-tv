@@ -36,10 +36,12 @@ import io.agedm.tv.ui.adapter.BrowseSectionAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import java.util.Calendar
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
@@ -286,12 +288,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadCast() {
-        replaceLoadRequest()
+        val requestId = replaceLoadRequest()
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
         currentTotal = 0
-        currentCastUrl = app.linkCastManager.ensureStarted()
-        showCastPage(currentCastUrl)
+        renderLoading("正在启动投送服务...")
+        loadJob = lifecycleScope.launch {
+            val url = withContext(Dispatchers.IO) { app.linkCastManager.ensureStarted() }
+            if (!shouldHandleLoadResult(requestId)) return@launch
+            currentCastUrl = url
+            val bitmap = if (!url.isNullOrBlank()) {
+                withContext(Dispatchers.Default) { createQrBitmap(url) }
+            } else null
+            if (!shouldHandleLoadResult(requestId)) return@launch
+            binding.pageTitle.text = "手机投送"
+            binding.pageSubtitle.text = "扫码搜索动画，一键发送到电视"
+            binding.loadingLayout.isVisible = false
+            binding.contentRecycler.isVisible = false
+            binding.castContent.isVisible = true
+            if (bitmap != null) {
+                binding.castQrImage.setImageBitmap(bitmap)
+                binding.castErrorText.isVisible = false
+            } else {
+                binding.castQrImage.setImageDrawable(null)
+                binding.castErrorText.text = app.linkCastManager.status.value
+                binding.castErrorText.isVisible = true
+            }
+            updateFocusTargets()
+            animateContentIn(binding.castContent)
+        }
     }
 
     private fun loadHome() {
@@ -483,24 +508,6 @@ class MainActivity : AppCompatActivity() {
         binding.castContent.isVisible = false
         binding.castErrorText.isVisible = false
         binding.castQrImage.setImageDrawable(null)
-    }
-
-    private fun showCastPage(serverUrl: String?) {
-        binding.pageHeader.isVisible = false
-        binding.contentRecycler.isVisible = false
-        binding.loadingLayout.isVisible = false
-        binding.emptyStateText.isVisible = false
-        binding.castContent.isVisible = true
-        if (serverUrl.isNullOrBlank()) {
-            binding.castQrImage.setImageDrawable(null)
-            binding.castErrorText.isVisible = true
-            binding.castErrorText.text = app.linkCastManager.status.value
-        } else {
-            binding.castErrorText.isVisible = false
-            binding.castQrImage.setImageBitmap(createQrBitmap(serverUrl))
-        }
-        updateFocusTargets()
-        animateContentIn(binding.castContent)
     }
 
     private fun animateContentIn(target: View) {
@@ -706,17 +713,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateFocusTargets() {
-        if (currentScreen == Screen.CAST) {
-            navButtons.forEach { button ->
-                button.nextFocusDownId = button.id
-            }
-            return
-        }
         val firstFilter = visibleFilterButtons().firstOrNull()
-        navButtons.forEach { button ->
-            button.nextFocusDownId = firstFilter?.id ?: binding.contentRecycler.id
+        val contentTarget = when {
+            currentScreen == Screen.CAST -> binding.castContent.id
+            firstFilter != null -> firstFilter.id
+            else -> binding.contentRecycler.id
         }
-
+        navButtons.forEach { button ->
+            button.nextFocusDownId = contentTarget
+        }
         visibleFilterButtons().forEach { button ->
             button.nextFocusUpId = currentNavButton().id
             button.nextFocusDownId = binding.contentRecycler.id

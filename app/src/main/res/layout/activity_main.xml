@@ -208,6 +208,8 @@
             android:id="@+id/castContent"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:focusable="true"
+            android:nextFocusUp="@id/navCastButton"
             android:gravity="center"
             android:orientation="vertical"
             android:visibility="gone">

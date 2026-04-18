@@ -9,6 +9,11 @@ import java.io.File
 
 class AgeTvApplication : Application() {
 
+    override fun onCreate() {
+        super.onCreate()
+        Thread { linkCastManager.ensureStarted() }.start()
+    }
+
     val playbackStore: PlaybackStore by lazy { PlaybackStore(this) }
 
     val contentCache: ContentCache by lazy {
