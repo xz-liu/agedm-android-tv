@@ -31,43 +31,24 @@ class AgeRepository(
     }
 
     suspend fun fetchHomeFeed(): HomeFeed = withContext(Dispatchers.IO) {
-        val body = cachedGet("home", TTL_HOME_MS, apiUrl("home-list"))
-        val response = json.decodeFromString<AgeHomeResponse>(body)
-        val feed = HomeFeed(
-            latest = response.latest.map { it.toPosterCard() },
-            recommend = response.recommend.map { it.toPosterCard() },
-            dailySections = response.weekList
-                .entries
-                .sortedBy { weekDaySort(it.key) }
-                .mapNotNull { (key, items) ->
-                    val mapped = items.map { it.toScheduleCard() }
-                    if (mapped.isEmpty()) null
-                    else BrowseSection(title = weekDayTitle(key), subtitle = "${mapped.size} 部作品", items = mapped)
-                },
-        )
-        touchDetailCaches(
-            feed.latest.map { it.animeId } +
-            feed.recommend.map { it.animeId } +
-            feed.dailySections.flatMap { s -> s.items.map { it.animeId } }
-        )
-        feed
+        decodeHomeFeed(cachedGet(homeCacheKey(), TTL_HOME_MS, apiUrl("home-list")))
     }
 
     suspend fun fetchRecommend(page: Int = 1, size: Int = 100): PagedCards = withContext(Dispatchers.IO) {
-        val body = cachedGet("recommend", TTL_LIST_MS, apiUrl("recommend"))
-        val response = json.decodeFromString<AgePosterListResponse>(body)
-        val cards = response.videos.map { it.toPosterCard() }
-        touchDetailCaches(cards.map { it.animeId })
-        PagedCards(items = cards, total = response.total, page = page, size = size)
+        decodeRecommend(
+            body = cachedGet(recommendCacheKey(), TTL_LIST_MS, apiUrl("recommend")),
+            page = page,
+            size = size,
+        )
     }
 
     suspend fun fetchUpdate(page: Int, size: Int = 30): PagedCards = withContext(Dispatchers.IO) {
         val url = apiUrl("update", "page" to page.toString(), "size" to size.toString())
-        val body = cachedGet("update_p$page", TTL_LIST_MS, url)
-        val response = json.decodeFromString<AgePosterListResponse>(body)
-        val cards = response.videos.map { it.toPosterCard() }
-        touchDetailCaches(cards.map { it.animeId })
-        PagedCards(items = cards, total = response.total, page = page, size = size)
+        decodeUpdate(
+            body = cachedGet(updateCacheKey(page), TTL_LIST_MS, url),
+            page = page,
+            size = size,
+        )
     }
 
     suspend fun fetchCatalog(query: CatalogQuery): PagedCards = withContext(Dispatchers.IO) {
@@ -85,38 +66,60 @@ class AgeRepository(
             "letter" to query.letter,
             "order" to query.order,
         )
-        val cacheKey = "catalog_p${query.page}_r${query.region}_g${query.genre}" +
-            "_l${query.label}_y${query.year}_o${query.order}"
-        val body = cachedGet(cacheKey, TTL_LIST_MS, url)
-        val response = json.decodeFromString<AgeCatalogResponse>(body)
-        val cards = response.videos.map { it.toAnimeCard() }
-        touchDetailCaches(cards.map { it.animeId })
-        PagedCards(items = cards, total = response.total, page = query.page, size = query.size)
+        decodeCatalog(
+            body = cachedGet(catalogCacheKey(query), TTL_LIST_MS, url),
+            query = query,
+        )
     }
 
     suspend fun search(query: String, page: Int, size: Int = 24): PagedCards = withContext(Dispatchers.IO) {
         val url = apiUrl("search", "query" to query, "page" to page.toString())
-        val safeQuery = query.take(40).replace(Regex("[^\\w\\u4e00-\\u9fa5]"), "_")
-        val body = cachedGet("search_${safeQuery}_p$page", TTL_SEARCH_MS, url)
-        val response = json.decodeFromString<AgeSearchResponse>(body)
-        val cards = response.data.videos.map { it.toAnimeCard() }
-        touchDetailCaches(cards.map { it.animeId })
-        PagedCards(items = cards, total = response.data.total, page = page, size = size)
+        decodeSearch(
+            body = cachedGet(searchCacheKey(query, page), TTL_SEARCH_MS, url),
+            page = page,
+            size = size,
+        )
     }
 
     suspend fun fetchRankSections(year: String = "all"): List<BrowseSection> = withContext(Dispatchers.IO) {
-        val body = cachedGet("rank_$year", TTL_LIST_MS, apiUrl("rank", "year" to year))
-        val response = json.decodeFromString<AgeRankResponse>(body)
-        val titles = listOf("周榜", "月榜", "总榜")
-        val sections = response.rank.mapIndexed { index, entries ->
-            BrowseSection(
-                title = titles.getOrElse(index) { "排行榜" },
-                subtitle = if (year == "all") "Top ${entries.size}" else "$year 年 Top ${entries.size}",
-                items = entries.map { it.toAnimeCard(titles.getOrElse(index) { "排行榜" }) },
-            )
+        decodeRankSections(
+            body = cachedGet(rankCacheKey(year), TTL_LIST_MS, apiUrl("rank", "year" to year)),
+            year = year,
+        )
+    }
+
+    suspend fun peekHomeFeed(): HomeFeed? = withContext(Dispatchers.IO) {
+        peekCached(homeCacheKey(), ::decodeHomeFeed)
+    }
+
+    suspend fun peekRecommend(page: Int = 1, size: Int = 100): PagedCards? = withContext(Dispatchers.IO) {
+        peekCached(recommendCacheKey()) { body ->
+            decodeRecommend(body, page, size)
         }
-        touchDetailCaches(sections.flatMap { s -> s.items.map { it.animeId } })
-        sections
+    }
+
+    suspend fun peekUpdate(page: Int, size: Int = 30): PagedCards? = withContext(Dispatchers.IO) {
+        peekCached(updateCacheKey(page)) { body ->
+            decodeUpdate(body, page, size)
+        }
+    }
+
+    suspend fun peekCatalog(query: CatalogQuery): PagedCards? = withContext(Dispatchers.IO) {
+        peekCached(catalogCacheKey(query)) { body ->
+            decodeCatalog(body, query)
+        }
+    }
+
+    suspend fun peekSearch(query: String, page: Int, size: Int = 24): PagedCards? = withContext(Dispatchers.IO) {
+        peekCached(searchCacheKey(query, page)) { body ->
+            decodeSearch(body, page, size)
+        }
+    }
+
+    suspend fun peekRankSections(year: String = "all"): List<BrowseSection>? = withContext(Dispatchers.IO) {
+        peekCached(rankCacheKey(year)) { body ->
+            decodeRankSections(body, year)
+        }
     }
 
     suspend fun resolveStream(
@@ -202,6 +205,78 @@ class AgeRepository(
         ids.forEach { id -> cache?.touch("detail_$id") }
     }
 
+    private fun decodeHomeFeed(body: String): HomeFeed {
+        val response = json.decodeFromString<AgeHomeResponse>(body)
+        val feed = HomeFeed(
+            latest = response.latest.map { it.toPosterCard() },
+            recommend = response.recommend.map { it.toPosterCard() },
+            dailySections = response.weekList
+                .entries
+                .sortedBy { weekDaySort(it.key) }
+                .mapNotNull { (key, items) ->
+                    val mapped = items.map { it.toScheduleCard() }
+                    if (mapped.isEmpty()) null
+                    else BrowseSection(title = weekDayTitle(key), subtitle = "${mapped.size} 部作品", items = mapped)
+                },
+        )
+        touchDetailCaches(
+            feed.latest.map { it.animeId } +
+                feed.recommend.map { it.animeId } +
+                feed.dailySections.flatMap { section -> section.items.map { it.animeId } },
+        )
+        return feed
+    }
+
+    private fun decodeRecommend(body: String, page: Int, size: Int): PagedCards {
+        val response = json.decodeFromString<AgePosterListResponse>(body)
+        val cards = response.videos.map { it.toPosterCard() }
+        touchDetailCaches(cards.map { it.animeId })
+        return PagedCards(items = cards, total = response.total, page = page, size = size)
+    }
+
+    private fun decodeUpdate(body: String, page: Int, size: Int): PagedCards {
+        val response = json.decodeFromString<AgePosterListResponse>(body)
+        val cards = response.videos.map { it.toPosterCard() }
+        touchDetailCaches(cards.map { it.animeId })
+        return PagedCards(items = cards, total = response.total, page = page, size = size)
+    }
+
+    private fun decodeCatalog(body: String, query: CatalogQuery): PagedCards {
+        val response = json.decodeFromString<AgeCatalogResponse>(body)
+        val cards = response.videos.map { it.toAnimeCard() }
+        touchDetailCaches(cards.map { it.animeId })
+        return PagedCards(items = cards, total = response.total, page = query.page, size = query.size)
+    }
+
+    private fun decodeSearch(body: String, page: Int, size: Int): PagedCards {
+        val response = json.decodeFromString<AgeSearchResponse>(body)
+        val cards = response.data.videos.map { it.toAnimeCard() }
+        touchDetailCaches(cards.map { it.animeId })
+        return PagedCards(items = cards, total = response.data.total, page = page, size = size)
+    }
+
+    private fun decodeRankSections(body: String, year: String): List<BrowseSection> {
+        val response = json.decodeFromString<AgeRankResponse>(body)
+        val titles = listOf("周榜", "月榜", "总榜")
+        val sections = response.rank.mapIndexed { index, entries ->
+            BrowseSection(
+                title = titles.getOrElse(index) { "排行榜" },
+                subtitle = if (year == "all") "Top ${entries.size}" else "$year 年 Top ${entries.size}",
+                items = entries.map { it.toAnimeCard(titles.getOrElse(index) { "排行榜" }) },
+            )
+        }
+        touchDetailCaches(sections.flatMap { section -> section.items.map { it.animeId } })
+        return sections
+    }
+
+    private fun <T> peekCached(key: String, decode: (String) -> T): T? {
+        val contentCache = cache ?: return null
+        val body = contentCache.peek(key) ?: return null
+        return runCatching { decode(body) }
+            .onSuccess { contentCache.touch(key) }
+            .getOrNull()
+    }
+
     private fun cachedGet(
         key: String,
         ttlMs: Long,
@@ -263,6 +338,24 @@ class AgeRepository(
     private fun desktopDetailUrl(animeId: Long): String {
         return "$DESKTOP_BASE_URL/detail/$animeId"
     }
+
+    private fun homeCacheKey(): String = "home"
+
+    private fun recommendCacheKey(): String = "recommend"
+
+    private fun updateCacheKey(page: Int): String = "update_p$page"
+
+    private fun catalogCacheKey(query: CatalogQuery): String {
+        return "catalog_p${query.page}_r${query.region}_g${query.genre}" +
+            "_l${query.label}_y${query.year}_o${query.order}"
+    }
+
+    private fun searchCacheKey(query: String, page: Int): String {
+        val safeQuery = query.take(40).replace(Regex("[^\\w\\u4e00-\\u9fa5]"), "_")
+        return "search_${safeQuery}_p$page"
+    }
+
+    private fun rankCacheKey(year: String): String = "rank_$year"
 
     private fun AgeDetailResponse.toAnimeDetail(desktopRecommendations: List<AgeRelatedItem>): AnimeDetail {
         val vipSources = playerVipRaw.split(",")

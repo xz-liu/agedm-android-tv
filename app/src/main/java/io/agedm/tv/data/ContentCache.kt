@@ -15,6 +15,17 @@ import java.io.File
  */
 class ContentCache(private val dir: File) {
 
+    fun peek(key: String): String? {
+        val file = fileFor(key)
+        if (!file.exists()) return null
+        return try {
+            val text = file.readText()
+            val nl = text.indexOf('\n')
+            if (nl < 0) return null
+            text.substring(nl + 1)
+        } catch (_: Exception) { null }
+    }
+
     @Synchronized
     fun get(key: String, ttlMs: Long): String? {
         val file = fileFor(key)

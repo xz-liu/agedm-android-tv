@@ -340,121 +340,96 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHome() {
-        renderLoading("正在整理首页...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        val requestId = replaceLoadRequest()
-        loadJob = lifecycleScope.launch {
-            try {
-                val feed = app.ageRepository.fetchHomeFeed()
-                val sections = buildList {
-                    val todaySection = feed.dailySections.firstOrNull { it.title.startsWith(todayWeekdayPrefix()) }
-                    todaySection?.let { add(BrowseSection("今日更新", it.subtitle, it.items.take(12))) }
-                    add(BrowseSection("最近更新", "AGE 首页最新上架", feed.latest.take(12)))
-                    add(BrowseSection("每日推荐", "站内推荐作品", feed.recommend.take(12)))
-                    addAll(
-                        feed.dailySections
-                            .filterNot { it.title.startsWith(todayWeekdayPrefix()) }
-                            .take(4)
-                            .map { it.copy(items = it.items.take(12)) },
-                    )
-                }
-                if (!shouldHandleLoadResult(requestId)) return@launch
-                binding.pageTitle.text = getString(R.string.app_name)
-                binding.pageSubtitle.text = "推荐、更新与每日追番"
-                showSections(sections, emptyMessage = "首页暂时没有内容")
-            } catch (error: Throwable) {
-                handleLoadFailure(requestId, "首页加载失败", error)
-            }
+        currentTotal = 0
+        binding.pageTitle.text = getString(R.string.app_name)
+        binding.pageSubtitle.text = "推荐、更新与每日追番"
+        launchStaleFirstLoad(
+            loadingMessage = "正在整理首页...",
+            errorPrefix = "首页加载失败",
+            peek = { app.ageRepository.peekHomeFeed() },
+            fetch = { app.ageRepository.fetchHomeFeed() },
+        ) { feed ->
+            showSections(buildHomeSections(feed), emptyMessage = "首页暂时没有内容")
         }
     }
 
     private fun loadCatalog(page: Int) {
         catalogQuery = catalogQuery.copy(page = page, size = 30)
-        renderLoading("正在加载目录...")
         applyFilterActions(catalogFilterActions(), showReset = true) {
             catalogQuery = CatalogQuery()
             openScreen(Screen.CATALOG)
         }
         updatePagination(visible = false)
-        val requestId = replaceLoadRequest()
         val query = catalogQuery
-        loadJob = lifecycleScope.launch {
-            try {
-                val result = app.ageRepository.fetchCatalog(query)
-                if (!shouldHandleLoadResult(requestId)) return@launch
-                currentTotal = result.total
-                currentPageSize = result.size
-                binding.pageTitle.text = "目录"
-                binding.pageSubtitle.text = "按 AGE 分类快速找番"
-                showGrid(result.items, emptyMessage = "当前筛选下没有结果")
-                updatePagination(visible = result.total > result.size)
-            } catch (error: Throwable) {
-                handleLoadFailure(requestId, "目录加载失败", error)
-            }
+        binding.pageTitle.text = "目录"
+        binding.pageSubtitle.text = "按 AGE 分类快速找番"
+        launchStaleFirstLoad(
+            loadingMessage = "正在加载目录...",
+            errorPrefix = "目录加载失败",
+            peek = { app.ageRepository.peekCatalog(query) },
+            fetch = { app.ageRepository.fetchCatalog(query) },
+        ) { result ->
+            currentTotal = result.total
+            currentPageSize = result.size
+            showGrid(result.items, emptyMessage = "当前筛选下没有结果")
+            updatePagination(visible = result.total > result.size)
         }
     }
 
     private fun loadRecommend() {
-        renderLoading("正在加载推荐...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        val requestId = replaceLoadRequest()
-        loadJob = lifecycleScope.launch {
-            try {
-                val result = app.ageRepository.fetchRecommend()
-                if (!shouldHandleLoadResult(requestId)) return@launch
-                currentTotal = result.total
-                binding.pageTitle.text = "推荐"
-                binding.pageSubtitle.text = "AGE 站内精选片单"
-                showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
-            } catch (error: Throwable) {
-                handleLoadFailure(requestId, "推荐加载失败", error)
-            }
+        binding.pageTitle.text = "推荐"
+        binding.pageSubtitle.text = "AGE 站内精选片单"
+        launchStaleFirstLoad(
+            loadingMessage = "正在加载推荐...",
+            errorPrefix = "推荐加载失败",
+            peek = { app.ageRepository.peekRecommend() },
+            fetch = { app.ageRepository.fetchRecommend() },
+        ) { result ->
+            currentTotal = result.total
+            currentPageSize = result.size
+            showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
         }
     }
 
     private fun loadUpdate(page: Int) {
-        renderLoading("正在加载更新...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        val requestId = replaceLoadRequest()
-        loadJob = lifecycleScope.launch {
-            try {
-                val result = app.ageRepository.fetchUpdate(page = page, size = 30)
-                if (!shouldHandleLoadResult(requestId)) return@launch
-                currentTotal = result.total
-                currentPageSize = result.size
-                binding.pageTitle.text = "更新"
-                binding.pageSubtitle.text = "最近更新的动画作品"
-                showGrid(result.items, emptyMessage = "更新区暂时没有内容")
-                updatePagination(visible = result.total > result.size)
-            } catch (error: Throwable) {
-                handleLoadFailure(requestId, "更新加载失败", error)
-            }
+        binding.pageTitle.text = "更新"
+        binding.pageSubtitle.text = "最近更新的动画作品"
+        launchStaleFirstLoad(
+            loadingMessage = "正在加载更新...",
+            errorPrefix = "更新加载失败",
+            peek = { app.ageRepository.peekUpdate(page = page, size = 30) },
+            fetch = { app.ageRepository.fetchUpdate(page = page, size = 30) },
+        ) { result ->
+            currentTotal = result.total
+            currentPageSize = result.size
+            showGrid(result.items, emptyMessage = "更新区暂时没有内容")
+            updatePagination(visible = result.total > result.size)
         }
     }
 
     private fun loadRank() {
-        renderLoading("正在加载排行...")
         applyFilterActions(rankFilterActions(), showReset = false)
         updatePagination(visible = false)
-        val requestId = replaceLoadRequest()
         val year = rankYear
-        loadJob = lifecycleScope.launch {
-            try {
-                val sections = app.ageRepository.fetchRankSections(year)
-                if (!shouldHandleLoadResult(requestId)) return@launch
-                binding.pageTitle.text = "排行"
-                binding.pageSubtitle.text = if (year == "all") {
-                    "站内热门 Top 榜单"
-                } else {
-                    "$year 年度热门榜单"
-                }
-                showSections(sections, emptyMessage = "排行榜暂时没有内容")
-            } catch (error: Throwable) {
-                handleLoadFailure(requestId, "排行加载失败", error)
-            }
+        binding.pageTitle.text = "排行"
+        binding.pageSubtitle.text = if (year == "all") {
+            "站内热门 Top 榜单"
+        } else {
+            "$year 年度热门榜单"
+        }
+        launchStaleFirstLoad(
+            loadingMessage = "正在加载排行...",
+            errorPrefix = "排行加载失败",
+            peek = { app.ageRepository.peekRankSections(year) },
+            fetch = { app.ageRepository.fetchRankSections(year) },
+        ) { sections ->
+            showSections(sections, emptyMessage = "排行榜暂时没有内容")
         }
     }
 
@@ -477,23 +452,66 @@ class MainActivity : AppCompatActivity() {
             showSearchDialog()
             return
         }
-        renderLoading("正在搜索「$query」...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
+        binding.pageTitle.text = "搜索"
+        binding.pageSubtitle.text = "「$query」相关结果"
+        launchStaleFirstLoad(
+            loadingMessage = "正在搜索「$query」...",
+            errorPrefix = "搜索失败",
+            peek = { app.ageRepository.peekSearch(query = query, page = page, size = 24) },
+            fetch = { app.ageRepository.search(query = query, page = page, size = 24) },
+        ) { result ->
+            currentTotal = result.total
+            currentPageSize = result.size
+            showGrid(result.items, emptyMessage = "没有搜索到相关动画")
+            updatePagination(visible = result.total > result.size)
+        }
+    }
+
+    private fun <T> launchStaleFirstLoad(
+        loadingMessage: String,
+        errorPrefix: String,
+        peek: suspend () -> T?,
+        fetch: suspend () -> T,
+        render: (T) -> Unit,
+    ) {
         val requestId = replaceLoadRequest()
         loadJob = lifecycleScope.launch {
+            var showingCached = false
             try {
-                val result = app.ageRepository.search(query = query, page = page, size = 24)
+                val cached = peek()
                 if (!shouldHandleLoadResult(requestId)) return@launch
-                currentTotal = result.total
-                currentPageSize = result.size
-                binding.pageTitle.text = "搜索"
-                binding.pageSubtitle.text = "「$query」相关结果"
-                showGrid(result.items, emptyMessage = "没有搜索到相关动画")
-                updatePagination(visible = result.total > result.size)
+                if (cached != null) {
+                    render(cached)
+                    showingCached = true
+                    delay(STALE_REFRESH_DELAY_MS)
+                    if (!shouldHandleLoadResult(requestId)) return@launch
+                } else {
+                    renderLoading(loadingMessage)
+                }
+
+                val fresh = fetch()
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                render(fresh)
             } catch (error: Throwable) {
-                handleLoadFailure(requestId, "搜索失败", error)
+                handleLoadFailure(requestId, errorPrefix, error, preserveContent = showingCached)
             }
+        }
+    }
+
+    private fun buildHomeSections(feed: io.agedm.tv.data.HomeFeed): List<BrowseSection> {
+        return buildList {
+            val todaySection = feed.dailySections.firstOrNull { it.title.startsWith(todayWeekdayPrefix()) }
+            todaySection?.let { add(BrowseSection("今日更新", it.subtitle, it.items.take(12))) }
+            add(BrowseSection("最近更新", "AGE 首页最新上架", feed.latest.take(12)))
+            add(BrowseSection("每日推荐", "站内推荐作品", feed.recommend.take(12)))
+            addAll(
+                feed.dailySections
+                    .filterNot { it.title.startsWith(todayWeekdayPrefix()) }
+                    .take(4)
+                    .map { it.copy(items = it.items.take(12)) },
+            )
         }
     }
 
@@ -585,9 +603,19 @@ class MainActivity : AppCompatActivity() {
         return requestId == loadRequestId
     }
 
-    private fun handleLoadFailure(requestId: Long, prefix: String, error: Throwable) {
+    private fun handleLoadFailure(
+        requestId: Long,
+        prefix: String,
+        error: Throwable,
+        preserveContent: Boolean = false,
+    ) {
         if (requestId != loadRequestId || isCancellationError(error)) return
-        showError("$prefix：${error.message.orEmpty()}")
+        val message = if (error.message.isNullOrBlank()) prefix else "$prefix：${error.message.orEmpty()}"
+        if (preserveContent) {
+            showOverlayMessage(message)
+        } else {
+            showError(message)
+        }
     }
 
     private fun isCancellationError(error: Throwable?): Boolean {
@@ -991,6 +1019,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
         private const val NAV_FOCUS_DELAY_MS = 300L
+        private const val STALE_REFRESH_DELAY_MS = 180L
 
         fun createIntent(context: Context, route: AgeRoute? = null): Intent {
             return Intent(context, MainActivity::class.java).apply {
