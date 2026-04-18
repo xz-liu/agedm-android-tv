@@ -77,6 +77,7 @@ class PlayerActivity : AppCompatActivity() {
     private var progressJob: Job? = null
     private var resolveJob: Job? = null
     private var parserPollJob: Job? = null
+    private var skipOsdJob: Job? = null
     private var controlsVisible = false
     private var drawerVisible = false
     private var autoHideAfterReady = true
@@ -121,6 +122,7 @@ class PlayerActivity : AppCompatActivity() {
         progressJob?.cancel()
         resolveJob?.cancel()
         parserPollJob?.cancel()
+        skipOsdJob?.cancel()
         parserRequest?.deferred?.cancel()
         persistCurrentProgress()
         parserWebView?.apply {
@@ -152,14 +154,15 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_NUMPAD_ENTER,
                 -> {
                     if (!controlsVisible && !drawerVisible) {
-                        showControls()
+                        togglePlayPause()
                         return true
                     }
                 }
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (!controlsVisible && !drawerVisible) {
-                        showControls()
+                        seekBy(88_000L)
+                        showSkipOsd("跳过片头  +1:28")
                         return true
                     }
                 }
@@ -744,6 +747,16 @@ class PlayerActivity : AppCompatActivity() {
             if (!player.isLoading) {
                 binding.loadingText.isVisible = false
             }
+        }
+    }
+
+    private fun showSkipOsd(message: String) {
+        skipOsdJob?.cancel()
+        binding.skipOsdText.text = message
+        binding.skipOsdText.isVisible = true
+        skipOsdJob = lifecycleScope.launch {
+            delay(1_500L)
+            binding.skipOsdText.isVisible = false
         }
     }
 

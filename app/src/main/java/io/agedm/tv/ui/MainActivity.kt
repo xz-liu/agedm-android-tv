@@ -350,8 +350,8 @@ class MainActivity : AppCompatActivity() {
             errorPrefix = "首页加载失败",
             peek = { app.ageRepository.peekHomeFeed() },
             fetch = { app.ageRepository.fetchHomeFeed() },
-        ) { feed ->
-            showSections(buildHomeSections(feed), emptyMessage = "首页暂时没有内容")
+        ) { feed, animate ->
+            showSections(buildHomeSections(feed), emptyMessage = "首页暂时没有内容", animate = animate)
         }
     }
 
@@ -370,10 +370,10 @@ class MainActivity : AppCompatActivity() {
             errorPrefix = "目录加载失败",
             peek = { app.ageRepository.peekCatalog(query) },
             fetch = { app.ageRepository.fetchCatalog(query) },
-        ) { result ->
+        ) { result, animate ->
             currentTotal = result.total
             currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "当前筛选下没有结果")
+            showGrid(result.items, emptyMessage = "当前筛选下没有结果", animate = animate)
             updatePagination(visible = result.total > result.size)
         }
     }
@@ -388,10 +388,10 @@ class MainActivity : AppCompatActivity() {
             errorPrefix = "推荐加载失败",
             peek = { app.ageRepository.peekRecommend() },
             fetch = { app.ageRepository.fetchRecommend() },
-        ) { result ->
+        ) { result, animate ->
             currentTotal = result.total
             currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "推荐区暂时没有内容")
+            showGrid(result.items, emptyMessage = "推荐区暂时没有内容", animate = animate)
         }
     }
 
@@ -405,10 +405,10 @@ class MainActivity : AppCompatActivity() {
             errorPrefix = "更新加载失败",
             peek = { app.ageRepository.peekUpdate(page = page, size = 30) },
             fetch = { app.ageRepository.fetchUpdate(page = page, size = 30) },
-        ) { result ->
+        ) { result, animate ->
             currentTotal = result.total
             currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "更新区暂时没有内容")
+            showGrid(result.items, emptyMessage = "更新区暂时没有内容", animate = animate)
             updatePagination(visible = result.total > result.size)
         }
     }
@@ -428,8 +428,8 @@ class MainActivity : AppCompatActivity() {
             errorPrefix = "排行加载失败",
             peek = { app.ageRepository.peekRankSections(year) },
             fetch = { app.ageRepository.fetchRankSections(year) },
-        ) { sections ->
-            showSections(sections, emptyMessage = "排行榜暂时没有内容")
+        ) { sections, animate ->
+            showSections(sections, emptyMessage = "排行榜暂时没有内容", animate = animate)
         }
     }
 
@@ -461,10 +461,10 @@ class MainActivity : AppCompatActivity() {
             errorPrefix = "搜索失败",
             peek = { app.ageRepository.peekSearch(query = query, page = page, size = 24) },
             fetch = { app.ageRepository.search(query = query, page = page, size = 24) },
-        ) { result ->
+        ) { result, animate ->
             currentTotal = result.total
             currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "没有搜索到相关动画")
+            showGrid(result.items, emptyMessage = "没有搜索到相关动画", animate = animate)
             updatePagination(visible = result.total > result.size)
         }
     }
@@ -474,7 +474,7 @@ class MainActivity : AppCompatActivity() {
         errorPrefix: String,
         peek: suspend () -> T?,
         fetch: suspend () -> T,
-        render: (T) -> Unit,
+        render: (T, animate: Boolean) -> Unit,
     ) {
         val requestId = replaceLoadRequest()
         loadJob = lifecycleScope.launch {
@@ -483,7 +483,7 @@ class MainActivity : AppCompatActivity() {
                 val cached = peek()
                 if (!shouldHandleLoadResult(requestId)) return@launch
                 if (cached != null) {
-                    render(cached)
+                    render(cached, true)
                     showingCached = true
                     delay(STALE_REFRESH_DELAY_MS)
                     if (!shouldHandleLoadResult(requestId)) return@launch
@@ -493,7 +493,7 @@ class MainActivity : AppCompatActivity() {
 
                 val fresh = fetch()
                 if (!shouldHandleLoadResult(requestId)) return@launch
-                render(fresh)
+                render(fresh, !showingCached)
             } catch (error: Throwable) {
                 handleLoadFailure(requestId, errorPrefix, error, preserveContent = showingCached)
             }
@@ -515,7 +515,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showSections(sections: List<BrowseSection>, emptyMessage: String) {
+    private fun showSections(sections: List<BrowseSection>, emptyMessage: String, animate: Boolean = true) {
         prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
@@ -525,10 +525,10 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.isVisible = sections.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
-        animateContentIn(binding.contentRecycler)
+        if (animate) animateContentIn(binding.contentRecycler)
     }
 
-    private fun showGrid(items: List<AnimeCard>, emptyMessage: String) {
+    private fun showGrid(items: List<AnimeCard>, emptyMessage: String, animate: Boolean = true) {
         prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
@@ -538,7 +538,7 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.isVisible = items.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
-        animateContentIn(binding.contentRecycler)
+        if (animate) animateContentIn(binding.contentRecycler)
     }
 
     private fun prepareBrowseContent() {
