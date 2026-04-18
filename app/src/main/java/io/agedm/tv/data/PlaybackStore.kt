@@ -57,6 +57,31 @@ class PlaybackStore(context: Context) {
         prefs.edit().putFloat(KEY_PLAYBACK_SPEED, speed).apply()
     }
 
+    @Synchronized
+    fun getSourcePriority(): List<String> {
+        val raw = prefs.getString(KEY_SOURCE_PRIORITY, null).orEmpty()
+        val requested = raw.split(',')
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+        val ordered = buildList {
+            add(SOURCE_AGE)
+            requested.filterTo(this) { it in SUPPORTED_SOURCES && it != SOURCE_AGE }
+            DEFAULT_SOURCE_PRIORITY.filterTo(this) { it !in this }
+        }
+        return ordered.distinct()
+    }
+
+    @Synchronized
+    fun setSourcePriority(order: List<String>) {
+        val normalized = buildList {
+            add(SOURCE_AGE)
+            order.map { it.trim().lowercase() }
+                .filterTo(this) { it in SUPPORTED_SOURCES && it != SOURCE_AGE }
+            DEFAULT_SOURCE_PRIORITY.filterTo(this) { it !in this }
+        }.distinct()
+        prefs.edit().putString(KEY_SOURCE_PRIORITY, normalized.joinToString(",")).apply()
+    }
+
     private fun readAll(): MutableMap<Long, PlaybackRecord> {
         val raw = prefs.getString(KEY_RECORDS, null).orEmpty()
         if (raw.isBlank()) return mutableMapOf()
@@ -79,5 +104,13 @@ class PlaybackStore(context: Context) {
         private const val KEY_RECORDS = "playback_records"
         private const val KEY_AUTO_NEXT = "auto_next"
         private const val KEY_PLAYBACK_SPEED = "playback_speed"
+        private const val KEY_SOURCE_PRIORITY = "source_priority"
+
+        const val SOURCE_AGE = "age"
+        const val SOURCE_AAFUN = "aafun"
+        const val SOURCE_DM84 = "dm84"
+
+        val DEFAULT_SOURCE_PRIORITY = listOf(SOURCE_AGE, SOURCE_AAFUN, SOURCE_DM84)
+        val SUPPORTED_SOURCES = DEFAULT_SOURCE_PRIORITY.toSet()
     }
 }

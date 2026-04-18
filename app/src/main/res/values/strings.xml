@@ -24,6 +24,14 @@
     <string name="main_subtitle">原生 TV 浏览界面</string>
     <string name="detail_title">动画详情</string>
     <string name="detail_subtitle">选源、选集、继续观看</string>
+    <string name="settings_title">设置</string>
+    <string name="settings_subtitle">播放器偏好与应用维护</string>
+    <string name="settings_section_playback">播放</string>
+    <string name="settings_section_source">播放源</string>
+    <string name="settings_section_app">应用</string>
+    <string name="settings_source_hint">AGE 固定为第一优先级，外部源顺序可调整。</string>
+    <string name="settings_update_button">重新安装最新版本</string>
+    <string name="settings_update_hint">直接打开 GitHub 上的最新 APK 安装包。</string>
     <string name="loading_text">正在加载 AGE 内容...</string>
     <string name="empty_text">这里暂时没有内容</string>
     <string name="section_sources">播放源</string>

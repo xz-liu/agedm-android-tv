@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
@@ -92,6 +93,7 @@ class MainActivity : AppCompatActivity() {
     private var loadRequestId: Long = 0L
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
+    private var lastNavUpPressUptimeMs: Long = 0L
     private var slideFromRight = true
     private val navButtons: List<Button>
         get() = listOf(
@@ -211,6 +213,20 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val focused = currentFocus
+            if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && focused != null && isInNavArea(focused)) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastNavUpPressUptimeMs <= SETTINGS_SHORTCUT_WINDOW_MS) {
+                    lastNavUpPressUptimeMs = 0L
+                    startActivity(SettingsActivity.createIntent(this))
+                } else {
+                    lastNavUpPressUptimeMs = now
+                    showOverlayMessage("连按 2 次向上打开设置")
+                }
+                return true
+            }
+            if (event.keyCode != KeyEvent.KEYCODE_DPAD_UP || focused == null || !isInNavArea(focused)) {
+                lastNavUpPressUptimeMs = 0L
+            }
             if (focused != null && shouldBlockEdgeNavigation(focused, event.keyCode)) {
                 return true
             }
@@ -1019,6 +1035,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
         private const val NAV_FOCUS_DELAY_MS = 300L
+        private const val SETTINGS_SHORTCUT_WINDOW_MS = 1_100L
         private const val STALE_REFRESH_DELAY_MS = 180L
 
         fun createIntent(context: Context, route: AgeRoute? = null): Intent {

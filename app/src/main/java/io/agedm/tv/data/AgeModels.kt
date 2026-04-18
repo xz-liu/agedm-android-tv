@@ -68,11 +68,19 @@ data class AnimeDetail(
     val playerJx: PlayerJx,
 )
 
+enum class SourceResolver {
+    AGE_PARSER,
+    WEB_PAGE,
+}
+
 data class EpisodeSource(
     val key: String,
     val label: String,
     val isVipLike: Boolean,
     val episodes: List<EpisodeItem>,
+    val providerName: String = "AGE",
+    val resolver: SourceResolver = SourceResolver.AGE_PARSER,
+    val pageHeaders: Map<String, String> = emptyMap(),
 )
 
 data class EpisodeItem(

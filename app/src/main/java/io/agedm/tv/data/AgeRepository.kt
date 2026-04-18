@@ -20,6 +20,13 @@ class AgeRepository(
         explicitNulls = false
     },
 ) {
+    private val supplementalSourceService by lazy {
+        SupplementalSourceService(
+            cache = cache,
+            client = client,
+            json = json,
+        )
+    }
 
     suspend fun fetchDetail(animeId: Long): AnimeDetail = withContext(Dispatchers.IO) {
         val body = cachedGet("detail_$animeId", TTL_DETAIL_MS, apiUrl("detail/$animeId"))
@@ -27,7 +34,17 @@ class AgeRepository(
         val desktopRecommendations = runCatching {
             fetchDesktopRecommendations(animeId)
         }.getOrElse { emptyList() }
-        response.toAnimeDetail(desktopRecommendations)
+        val detail = response.toAnimeDetail(desktopRecommendations)
+        val supplementalSources = supplementalSourceService.loadCachedSources(animeId)
+        if (supplementalSources.isEmpty()) {
+            detail
+        } else {
+            detail.copy(
+                sources = detail.sources + supplementalSources.filterNot { supplemental ->
+                    detail.sources.any { it.key == supplemental.key }
+                },
+            )
+        }
     }
 
     suspend fun fetchHomeFeed(): HomeFeed = withContext(Dispatchers.IO) {
@@ -85,6 +102,13 @@ class AgeRepository(
         decodeRankSections(
             body = cachedGet(rankCacheKey(year), TTL_LIST_MS, apiUrl("rank", "year" to year)),
             year = year,
+        )
+    }
+
+    suspend fun fetchSupplementalSources(animeId: Long, title: String): List<EpisodeSource> = withContext(Dispatchers.IO) {
+        supplementalSourceService.fetchSources(
+            animeId = animeId,
+            title = title,
         )
     }
 

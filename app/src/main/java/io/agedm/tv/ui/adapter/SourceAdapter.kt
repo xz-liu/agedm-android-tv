@@ -9,13 +9,26 @@ import io.agedm.tv.databinding.ItemSourceBinding
 
 class SourceAdapter(
     private val onSelected: (EpisodeSource) -> Unit,
+    private val onAction: (() -> Unit)? = null,
 ) : RecyclerView.Adapter<SourceAdapter.SourceViewHolder>() {
 
-    private var items: List<EpisodeSource> = emptyList()
+    sealed interface RowItem {
+        data class Source(val source: EpisodeSource) : RowItem
+        data class Action(val label: String) : RowItem
+    }
+
+    private var items: List<RowItem> = emptyList()
     private var selectedKey: String? = null
 
-    fun submitList(sources: List<EpisodeSource>, currentKey: String?) {
-        items = sources
+    fun submitList(
+        sources: List<EpisodeSource>,
+        currentKey: String?,
+        actionLabel: String? = null,
+    ) {
+        items = buildList {
+            addAll(sources.map(RowItem::Source))
+            actionLabel?.takeIf { it.isNotBlank() }?.let { add(RowItem.Action(it)) }
+        }
         selectedKey = currentKey
         notifyDataSetChanged()
     }
@@ -26,7 +39,7 @@ class SourceAdapter(
     }
 
     override fun onBindViewHolder(holder: SourceViewHolder, position: Int) {
-        holder.bind(items[position], items[position].key == selectedKey)
+        holder.bind(items[position], (items[position] as? RowItem.Source)?.source?.key == selectedKey)
     }
 
     override fun getItemCount(): Int = items.size
@@ -35,12 +48,26 @@ class SourceAdapter(
         private val binding: ItemSourceBinding,
     ) : RecyclerView.ViewHolder(binding.root) {
 
-        fun bind(item: EpisodeSource, selected: Boolean) {
-            binding.sourceText.text = if (item.isVipLike) "${item.label} · 解析" else item.label
-            binding.sourceText.isSelected = selected
-            binding.sourceText.setTextColor(if (selected) Color.parseColor("#052016") else Color.WHITE)
-            binding.sourceText.setOnClickListener { onSelected(item) }
+        fun bind(item: RowItem, selected: Boolean) {
+            when (item) {
+                is RowItem.Source -> {
+                    binding.sourceText.text = if (item.source.isVipLike) {
+                        "${item.source.label} · 解析"
+                    } else {
+                        item.source.label
+                    }
+                    binding.sourceText.isSelected = selected
+                    binding.sourceText.setTextColor(if (selected) Color.parseColor("#052016") else Color.WHITE)
+                    binding.sourceText.setOnClickListener { onSelected(item.source) }
+                }
+
+                is RowItem.Action -> {
+                    binding.sourceText.text = item.label
+                    binding.sourceText.isSelected = false
+                    binding.sourceText.setTextColor(Color.parseColor("#6ED9B8"))
+                    binding.sourceText.setOnClickListener { onAction?.invoke() }
+                }
+            }
         }
     }
 }
-

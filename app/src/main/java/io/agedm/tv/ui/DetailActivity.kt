@@ -3,6 +3,7 @@ package io.agedm.tv.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
@@ -18,6 +19,9 @@ import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.AnimeDetail
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
+import io.agedm.tv.data.isExternalSource
+import io.agedm.tv.data.mergeDistinctSources
+import io.agedm.tv.data.orderedByPriority
 import kotlinx.coroutines.flow.collectLatest
 import io.agedm.tv.databinding.ActivityDetailBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
@@ -39,6 +43,7 @@ class DetailActivity : AppCompatActivity() {
     private var detail: AnimeDetail? = null
     private var selectedSourceIndex: Int = 0
     private var selectedEpisodeIndex: Int = 0
+    private var supplementalSourceLoading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,7 +63,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun setupLists() {
-        sourceAdapter = SourceAdapter(::onSourceSelected)
+        sourceAdapter = SourceAdapter(::onSourceSelected, ::onLoadSupplementalSources)
         episodeAdapter = EpisodeAdapter(::onEpisodeSelected)
         relatedAdapter = PosterCardAdapter { openDetail(it.animeId) }
         similarAdapter = PosterCardAdapter { openDetail(it.animeId) }
@@ -143,8 +148,11 @@ class DetailActivity : AppCompatActivity() {
         lifecycleScope.launch {
             runCatching { app.ageRepository.fetchDetail(animeId) }
                 .onSuccess { loadedDetail ->
-                    detail = loadedDetail
-                    bindDetail(loadedDetail)
+                    val orderedDetail = loadedDetail.copy(
+                        sources = loadedDetail.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
+                    )
+                    detail = orderedDetail
+                    bindDetail(orderedDetail, requestFocus = true)
                 }
                 .onFailure { error ->
                     showError("详情加载失败：${error.message.orEmpty()}")
@@ -152,13 +160,12 @@ class DetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun bindDetail(loadedDetail: AnimeDetail) {
+    private fun bindDetail(loadedDetail: AnimeDetail, requestFocus: Boolean = false) {
         binding.loadingLayout.isVisible = false
         binding.errorText.isVisible = false
         binding.detailScrollView.isVisible = true
 
         binding.pageTitle.text = loadedDetail.title
-        binding.pageSubtitle.text = "共 ${loadedDetail.sources.sumOf { it.episodes.size }} 个可选分集"
         binding.titleText.text = loadedDetail.title
         binding.metaText.text = listOf(loadedDetail.status, loadedDetail.tags)
             .filter { it.isNotBlank() }
@@ -169,15 +176,8 @@ class DetailActivity : AppCompatActivity() {
 
         val record = app.playbackStore.getRecord(loadedDetail.animeId)
         selectedSourceIndex = record?.sourceKey?.let(::selectedSourceIndexFor) ?: 0
-
-        val selectedSource = loadedDetail.sources.getOrNull(selectedSourceIndex)
-        selectedEpisodeIndex = record?.episodeIndex
-            ?.coerceIn(0, selectedSource?.episodes?.lastIndex ?: 0)
-            ?: 0
-        sourceAdapter.submitList(loadedDetail.sources, selectedSource?.key)
-        episodeAdapter.submitList(selectedSource?.episodes.orEmpty(), selectedEpisodeIndex)
-        binding.sourceRecycler.scrollToPosition(selectedSourceIndex)
-        binding.episodeRecycler.scrollToPosition(selectedEpisodeIndex)
+        selectedEpisodeIndex = record?.episodeIndex ?: 0
+        bindSelectionPanels(preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key)
 
         relatedAdapter.submitList(loadedDetail.related.map(::toCard))
         similarAdapter.submitList(loadedDetail.similar.map(::toCard))
@@ -188,7 +188,107 @@ class DetailActivity : AppCompatActivity() {
 
         binding.continueButton.isVisible = record != null
         binding.continueButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: getString(io.agedm.tv.R.string.btn_continue)
-        binding.playButton.requestFocus()
+        if (requestFocus) {
+            binding.playButton.requestFocus()
+        }
+    }
+
+    private fun bindSelectionPanels(
+        preferredSourceKey: String? = null,
+        focusSourceKey: String? = null,
+    ) {
+        val loadedDetail = detail ?: return
+        binding.pageSubtitle.text = "共 ${loadedDetail.sources.sumOf { it.episodes.size }} 个可选分集"
+
+        val resolvedSourceIndex = preferredSourceKey
+            ?.let { sourceKey ->
+                loadedDetail.sources.indexOfFirst { it.key == sourceKey }
+                    .takeIf { it >= 0 }
+            }
+            ?: selectedSourceIndex
+                .coerceIn(0, loadedDetail.sources.lastIndex.coerceAtLeast(0))
+
+        selectedSourceIndex = resolvedSourceIndex.takeIf { loadedDetail.sources.isNotEmpty() } ?: 0
+        val selectedSource = loadedDetail.sources.getOrNull(selectedSourceIndex)
+        if (selectedSource == null) {
+            sourceAdapter.submitList(emptyList(), null, sourceActionLabel(loadedDetail))
+            episodeAdapter.submitList(emptyList(), 0)
+            return
+        }
+
+        val record = app.playbackStore.getRecord(loadedDetail.animeId)
+        selectedEpisodeIndex = record?.takeIf { it.sourceKey == selectedSource.key }
+            ?.episodeIndex
+            ?.coerceIn(0, selectedSource.episodes.lastIndex.coerceAtLeast(0))
+            ?: selectedEpisodeIndex.coerceIn(0, selectedSource.episodes.lastIndex.coerceAtLeast(0))
+
+        sourceAdapter.submitList(loadedDetail.sources, selectedSource.key, sourceActionLabel(loadedDetail))
+        episodeAdapter.submitList(selectedSource.episodes, selectedEpisodeIndex)
+        binding.sourceRecycler.scrollToPosition(selectedSourceIndex)
+        binding.episodeRecycler.scrollToPosition(selectedEpisodeIndex)
+
+        focusSourceKey?.let(::focusSourceKey)
+    }
+
+    private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
+        if (loadedDetail.sources.any { it.isExternalSource() }) return null
+        return if (supplementalSourceLoading) "正在加载其他源..." else "加载其他源"
+    }
+
+    private fun onLoadSupplementalSources() {
+        if (supplementalSourceLoading) return
+        val loadedDetail = detail ?: return
+        supplementalSourceLoading = true
+        bindSelectionPanels(preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key)
+
+        lifecycleScope.launch {
+            runCatching {
+                app.ageRepository.fetchSupplementalSources(
+                    animeId = loadedDetail.animeId,
+                    title = loadedDetail.title,
+                )
+            }.onSuccess { extraSources ->
+                supplementalSourceLoading = false
+                val currentDetail = detail?.takeIf { it.animeId == loadedDetail.animeId } ?: return@launch
+                val existingKeys = currentDetail.sources.mapTo(linkedSetOf()) { it.key }
+                val mergedSources = currentDetail.sources
+                    .mergeDistinctSources(extraSources)
+                    .orderedByPriority(app.playbackStore.getSourcePriority())
+                detail = currentDetail.copy(sources = mergedSources)
+
+                val firstNewKey = mergedSources.firstOrNull { it.key !in existingKeys }?.key
+                if (firstNewKey != null) {
+                    selectedSourceIndex = mergedSources.indexOfFirst { it.key == firstNewKey }.coerceAtLeast(0)
+                    selectedEpisodeIndex = 0
+                    bindSelectionPanels(preferredSourceKey = firstNewKey, focusSourceKey = firstNewKey)
+                    Toast.makeText(this@DetailActivity, "已加载其他源", Toast.LENGTH_SHORT).show()
+                } else {
+                    bindSelectionPanels(preferredSourceKey = currentDetail.sources.getOrNull(selectedSourceIndex)?.key)
+                    Toast.makeText(this@DetailActivity, "没有找到新的补充源", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure { error ->
+                supplementalSourceLoading = false
+                bindSelectionPanels(preferredSourceKey = detail?.sources?.getOrNull(selectedSourceIndex)?.key)
+                Toast.makeText(
+                    this@DetailActivity,
+                    "其他源加载失败：${error.message.orEmpty()}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
+
+    private fun focusSourceKey(sourceKey: String) {
+        val position = detail?.sources?.indexOfFirst { it.key == sourceKey } ?: -1
+        if (position < 0) return
+        binding.sourceRecycler.post {
+            binding.sourceRecycler.scrollToPosition(position)
+            binding.sourceRecycler.post {
+                binding.sourceRecycler.findViewHolderForAdapterPosition(position)
+                    ?.itemView
+                    ?.requestFocus()
+            }
+        }
     }
 
     private fun onSourceSelected(source: EpisodeSource) {
@@ -201,9 +301,7 @@ class DetailActivity : AppCompatActivity() {
             ?.episodeIndex
             ?.coerceIn(0, source.episodes.lastIndex)
             ?: 0
-        sourceAdapter.submitList(loadedDetail.sources, source.key)
-        episodeAdapter.submitList(source.episodes, selectedEpisodeIndex)
-        binding.episodeRecycler.scrollToPosition(selectedEpisodeIndex)
+        bindSelectionPanels(preferredSourceKey = source.key)
     }
 
     private fun onEpisodeSelected(episode: EpisodeItem) {

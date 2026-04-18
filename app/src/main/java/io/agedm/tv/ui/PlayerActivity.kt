@@ -35,9 +35,14 @@ import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.PlaybackRecord
 import io.agedm.tv.data.ResolvedStream
+import io.agedm.tv.data.SourceResolver
+import io.agedm.tv.data.isExternalSource
+import io.agedm.tv.data.mergeDistinctSources
+import io.agedm.tv.data.orderedByPriority
 import io.agedm.tv.databinding.ActivityPlayerBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
+import java.io.IOException
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -51,9 +56,11 @@ class PlayerActivity : AppCompatActivity() {
 
     private data class ParserRequest(
         val id: Int,
-        val parserUrl: String,
+        val pageUrl: String,
         val source: EpisodeSource,
         val episode: EpisodeItem,
+        val pageHeaders: Map<String, String>,
+        val streamHeaders: Map<String, String>,
         val deferred: CompletableDeferred<ResolvedStream>,
     )
 
@@ -84,6 +91,8 @@ class PlayerActivity : AppCompatActivity() {
     private var hasPlaybackStarted = false
     private var parserRequestId = 0
     private var parserRequest: ParserRequest? = null
+    private var supplementalSourcesRequested = false
+    private var supplementalSourceLoading = false
     private val attemptedSourceIndices = linkedSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -320,13 +329,16 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun setupLists() {
-        sourceAdapter = SourceAdapter { source ->
-            val targetIndex = detail?.sources?.indexOfFirst { it.key == source.key } ?: -1
-            if (targetIndex >= 0 && targetIndex != currentSourceIndex) {
-                persistCurrentProgress()
-                beginPlayback(targetIndex, 0, 0L)
-            }
-        }
+        sourceAdapter = SourceAdapter(
+            onSelected = { source ->
+                val targetIndex = detail?.sources?.indexOfFirst { it.key == source.key } ?: -1
+                if (targetIndex >= 0 && targetIndex != currentSourceIndex) {
+                    persistCurrentProgress()
+                    beginPlayback(targetIndex, 0, 0L)
+                }
+            },
+            onAction = ::loadSupplementalSourcesManually,
+        )
 
         episodeAdapter = EpisodeAdapter { episode ->
             if (episode.index != currentEpisodeIndex) {
@@ -382,15 +394,19 @@ class PlayerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val loaded = app.ageRepository.fetchDetail(animeId)
-                detail = loaded
-                if (loaded.sources.isEmpty()) {
+                val ordered = loaded.copy(
+                    sources = loaded.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
+                )
+                detail = ordered
+                supplementalSourcesRequested = ordered.sources.any { it.resolver == SourceResolver.WEB_PAGE }
+                if (ordered.sources.isEmpty()) {
                     binding.loadingText.text = "当前动画没有可用分集"
                     showControls()
                     return@launch
                 }
                 val record = app.playbackStore.getRecord(animeId)
                 val preferPrompt = intent.getBooleanExtra(EXTRA_PREFER_RESUME_PROMPT, true)
-                if (preferPrompt && shouldOfferResume(record, loaded)) {
+                if (preferPrompt && shouldOfferResume(record, ordered)) {
                     showResumePrompt(record!!)
                 } else {
                     val selection = resolveSelection(record, useRecord = false)
@@ -477,18 +493,20 @@ class PlayerActivity : AppCompatActivity() {
         hasPlaybackStarted = false
         player.stop()
 
-        sourceAdapter.submitList(loadedDetail.sources, source.key)
-        episodeAdapter.submitList(source.episodes, episode.index)
+        refreshDrawerLists()
         updatePlayerInfo()
         scrollEpisodeIntoView()
 
         binding.loadingText.isVisible = true
-        binding.loadingText.text = "正在使用 AGE 解析 ${episode.label}..."
+        binding.loadingText.text = when (source.resolver) {
+            SourceResolver.AGE_PARSER -> "正在使用 AGE 解析 ${episode.label}..."
+            SourceResolver.WEB_PAGE -> "正在加载 ${source.label} · ${episode.label}..."
+        }
 
         resolveJob?.cancel()
         resolveJob = lifecycleScope.launch {
             try {
-                val stream = resolveStreamWithAgeParser(loadedDetail, source, episode)
+                val stream = resolveStreamForSource(loadedDetail, source, episode)
                 playResolvedStream(stream)
                 updatePlayerInfo()
             } catch (error: Throwable) {
@@ -502,17 +520,68 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private suspend fun resolveStreamForSource(
+        detail: AnimeDetail,
+        source: EpisodeSource,
+        episode: EpisodeItem,
+    ): ResolvedStream {
+        return when (source.resolver) {
+            SourceResolver.AGE_PARSER -> resolveStreamWithAgeParser(detail, source, episode)
+            SourceResolver.WEB_PAGE -> resolveStreamFromWebPage(source, episode)
+        }
+    }
+
     private suspend fun resolveStreamWithAgeParser(
         detail: AnimeDetail,
         source: EpisodeSource,
         episode: EpisodeItem,
     ): ResolvedStream {
         val parserUrl = app.ageRepository.buildParserUrl(detail, source, episode)
-        val request = ParserRequest(
-            id = ++parserRequestId,
-            parserUrl = parserUrl,
+        return resolveStreamViaWebView(
+            pageUrl = parserUrl,
             source = source,
             episode = episode,
+            pageHeaders = emptyMap(),
+            streamHeaders = app.ageRepository.buildPlaybackHeaders(parserUrl),
+            fallback = {
+                app.ageRepository.resolveStream(detail, source, episode)
+            },
+        )
+    }
+
+    private suspend fun resolveStreamFromWebPage(
+        source: EpisodeSource,
+        episode: EpisodeItem,
+    ): ResolvedStream {
+        val pageUrl = episode.token
+        if (pageUrl.isBlank()) {
+            throw IOException("补充源播放页为空")
+        }
+        return resolveStreamViaWebView(
+            pageUrl = pageUrl,
+            source = source,
+            episode = episode,
+            pageHeaders = source.pageHeaders,
+            streamHeaders = buildStreamHeaders(pageUrl, source),
+            fallback = null,
+        )
+    }
+
+    private suspend fun resolveStreamViaWebView(
+        pageUrl: String,
+        source: EpisodeSource,
+        episode: EpisodeItem,
+        pageHeaders: Map<String, String>,
+        streamHeaders: Map<String, String>,
+        fallback: (suspend () -> ResolvedStream)?,
+    ): ResolvedStream {
+        val request = ParserRequest(
+            id = ++parserRequestId,
+            pageUrl = pageUrl,
+            source = source,
+            episode = episode,
+            pageHeaders = pageHeaders,
+            streamHeaders = streamHeaders,
             deferred = CompletableDeferred(),
         )
 
@@ -522,7 +591,12 @@ class PlayerActivity : AppCompatActivity() {
 
         parserWebView?.stopLoading()
         parserWebView?.loadUrl("about:blank")
-        parserWebView?.loadUrl(parserUrl)
+        parserWebView?.settings?.userAgentString = pageHeaders["User-Agent"] ?: PLAYER_USER_AGENT
+        if (pageHeaders.isEmpty()) {
+            parserWebView?.loadUrl(pageUrl)
+        } else {
+            parserWebView?.loadUrl(pageUrl, pageHeaders)
+        }
 
         return try {
             withTimeout(PARSER_TIMEOUT_MS) {
@@ -532,7 +606,7 @@ class PlayerActivity : AppCompatActivity() {
             if (error is CancellationException) throw error
             parserPollJob?.cancel()
             parserRequest = null
-            app.ageRepository.resolveStream(detail, source, episode)
+            fallback?.invoke() ?: throw IOException("未能从页面提取真实视频地址")
         } finally {
             parserWebView?.stopLoading()
         }
@@ -572,20 +646,59 @@ class PlayerActivity : AppCompatActivity() {
         val nextSourceIndex = loadedDetail.sources.indices.firstOrNull { index ->
             index !in attemptedSourceIndices &&
                 episodeIndex in loadedDetail.sources[index].episodes.indices
-        } ?: return false
-
-        val nextSource = loadedDetail.sources[nextSourceIndex]
-        binding.loadingText.isVisible = true
-        binding.loadingText.text = "当前源失败，切换到 ${nextSource.label}..."
-        lifecycleScope.launch {
-            beginPlayback(
-                sourceIndex = nextSourceIndex,
-                episodeIndex = episodeIndex,
-                seekMs = seekMs,
-                resetAttempts = false,
-            )
         }
-        return true
+        if (nextSourceIndex != null) {
+            val nextSource = loadedDetail.sources[nextSourceIndex]
+            binding.loadingText.isVisible = true
+            binding.loadingText.text = "当前源失败，切换到 ${nextSource.label}..."
+            lifecycleScope.launch {
+                beginPlayback(
+                    sourceIndex = nextSourceIndex,
+                    episodeIndex = episodeIndex,
+                    seekMs = seekMs,
+                    resetAttempts = false,
+                )
+            }
+            return true
+        }
+
+        if (!supplementalSourcesRequested) {
+            supplementalSourcesRequested = true
+            binding.loadingText.isVisible = true
+            binding.loadingText.text = "AGE 源已穷尽，正在匹配补充源..."
+            lifecycleScope.launch {
+                val extraSources = app.ageRepository.fetchSupplementalSources(
+                    animeId = loadedDetail.animeId,
+                    title = loadedDetail.title,
+                )
+                val currentDetail = detail?.takeIf { it.animeId == loadedDetail.animeId } ?: return@launch
+                if (extraSources.isNotEmpty()) {
+                    val (mergedDetail, firstNewKey) = mergeSupplementalSources(currentDetail, extraSources)
+                    detail = mergedDetail
+                    refreshDrawerLists(focusSourceKey = firstNewKey)
+                    val extraSourceIndex = mergedDetail.sources.indices.firstOrNull { index ->
+                        index !in attemptedSourceIndices &&
+                            episodeIndex in mergedDetail.sources[index].episodes.indices
+                    }
+                    if (extraSourceIndex != null) {
+                        beginPlayback(
+                            sourceIndex = extraSourceIndex,
+                            episodeIndex = episodeIndex,
+                            seekMs = seekMs,
+                            resetAttempts = false,
+                        )
+                        return@launch
+                    }
+                }
+
+                binding.loadingText.isVisible = true
+                binding.loadingText.text = "解析失败：未找到可用补充源"
+                showControls()
+            }
+            return true
+        }
+
+        return false
     }
 
     private fun startParserPolling(requestId: Int) {
@@ -618,18 +731,26 @@ class PlayerActivity : AppCompatActivity() {
         activeRequest.deferred.complete(
             ResolvedStream(
                 streamUrl = normalizedUrl,
-                parserUrl = activeRequest.parserUrl,
+                parserUrl = activeRequest.pageUrl,
                 sourceKey = activeRequest.source.key,
                 sourceLabel = activeRequest.source.label,
                 episode = activeRequest.episode,
                 isM3u8 = isM3u8,
                 mimeType = app.ageRepository.inferMimeType(normalizedUrl, isM3u8),
-                headers = app.ageRepository.buildPlaybackHeaders(activeRequest.parserUrl),
+                headers = activeRequest.streamHeaders,
             ),
         )
         parserRequest = null
         parserPollJob?.cancel()
         return true
+    }
+
+    private fun buildStreamHeaders(pageUrl: String, source: EpisodeSource): Map<String, String> {
+        return app.ageRepository.buildPlaybackHeaders(pageUrl)
+            .toMutableMap()
+            .apply {
+                source.pageHeaders["User-Agent"]?.let { put("User-Agent", it) }
+            }
     }
 
     private suspend fun readParserMediaUrl(): String? {
@@ -717,6 +838,85 @@ class PlayerActivity : AppCompatActivity() {
         binding.playerTitle.text = loadedDetail.title
         binding.playerSubtitle.text = "${source.label} · ${episode.label}"
         binding.sourceSummary.text = "当前源：${source.label}（已尝试 ${attemptedSourceIndices.size} 个源）"
+    }
+
+    private fun refreshDrawerLists(focusSourceKey: String? = null) {
+        val loadedDetail = detail ?: return
+        val currentKey = currentSource?.key
+        sourceAdapter.submitList(loadedDetail.sources, currentKey, sourceActionLabel(loadedDetail))
+
+        val selectedSource = loadedDetail.sources.getOrNull(currentSourceIndex)
+        if (selectedSource != null) {
+            episodeAdapter.submitList(selectedSource.episodes, currentEpisodeIndex)
+        } else {
+            episodeAdapter.submitList(emptyList(), 0)
+        }
+
+        focusSourceKey?.let(::focusSourceKey)
+    }
+
+    private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
+        if (loadedDetail.sources.any { it.isExternalSource() }) return null
+        return if (supplementalSourceLoading) "正在加载其他源..." else "加载其他源"
+    }
+
+    private fun loadSupplementalSourcesManually() {
+        if (supplementalSourceLoading) return
+        val loadedDetail = detail ?: return
+        supplementalSourceLoading = true
+        refreshDrawerLists()
+        showSkipOsd("正在加载其他源...")
+
+        lifecycleScope.launch {
+            runCatching {
+                app.ageRepository.fetchSupplementalSources(
+                    animeId = loadedDetail.animeId,
+                    title = loadedDetail.title,
+                )
+            }.onSuccess { extraSources ->
+                supplementalSourceLoading = false
+                val currentDetail = detail?.takeIf { it.animeId == loadedDetail.animeId } ?: return@launch
+                val (mergedDetail, firstNewKey) = mergeSupplementalSources(currentDetail, extraSources)
+                detail = mergedDetail
+                if (firstNewKey != null) {
+                    supplementalSourcesRequested = true
+                    refreshDrawerLists(focusSourceKey = firstNewKey)
+                    showSkipOsd("已加载其他源")
+                } else {
+                    refreshDrawerLists()
+                    showSkipOsd("没有找到新的补充源")
+                }
+            }.onFailure {
+                supplementalSourceLoading = false
+                refreshDrawerLists()
+                showSkipOsd("其他源加载失败")
+            }
+        }
+    }
+
+    private fun mergeSupplementalSources(
+        currentDetail: AnimeDetail,
+        extraSources: List<EpisodeSource>,
+    ): Pair<AnimeDetail, String?> {
+        val existingKeys = currentDetail.sources.mapTo(linkedSetOf()) { it.key }
+        val mergedSources = currentDetail.sources
+            .mergeDistinctSources(extraSources)
+            .orderedByPriority(app.playbackStore.getSourcePriority())
+        val firstNewKey = mergedSources.firstOrNull { it.key !in existingKeys }?.key
+        return currentDetail.copy(sources = mergedSources) to firstNewKey
+    }
+
+    private fun focusSourceKey(sourceKey: String) {
+        val position = detail?.sources?.indexOfFirst { it.key == sourceKey } ?: -1
+        if (position < 0) return
+        binding.sourceRecycler.post {
+            binding.sourceRecycler.scrollToPosition(position)
+            binding.sourceRecycler.post {
+                binding.sourceRecycler.findViewHolderForAdapterPosition(position)
+                    ?.itemView
+                    ?.requestFocus()
+            }
+        }
     }
 
     private fun openSpeedSelector() {
