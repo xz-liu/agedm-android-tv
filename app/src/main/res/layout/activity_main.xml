@@ -232,7 +232,9 @@
                     android:id="@+id/castQrImage"
                     android:layout_width="280dp"
                     android:layout_height="280dp"
-                    android:contentDescription="@string/btn_cast" />
+                    android:background="#FFFFFF"
+                    android:contentDescription="@string/btn_cast"
+                    android:padding="12dp" />
 
                 <TextView
                     android:id="@+id/castErrorText"

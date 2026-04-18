@@ -11,7 +11,16 @@
         <item name="android:textColor">@color/age_text</item>
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.AgeTv.Dialog</item>
         <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowBackground">@color/age_bg</item>
+        <item name="android:windowAnimationStyle">@style/AgeTv.WindowAnimation</item>
         <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="28">shortEdges</item>
+    </style>
+
+    <style name="AgeTv.WindowAnimation" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/activity_fade_in</item>
+        <item name="android:activityOpenExitAnimation">@anim/activity_fade_out</item>
+        <item name="android:activityCloseEnterAnimation">@anim/activity_fade_in</item>
+        <item name="android:activityCloseExitAnimation">@anim/activity_fade_out</item>
     </style>
 
     <style name="ThemeOverlay.AgeTv.Dialog" parent="ThemeOverlay.MaterialComponents.MaterialAlertDialog">

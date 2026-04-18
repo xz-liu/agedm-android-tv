@@ -171,6 +171,23 @@ class AgeRepository(
         }
     }
 
+    suspend fun peekDetail(animeId: Long): AnimeDetail? = withContext(Dispatchers.IO) {
+        peekCached("detail_$animeId") { body ->
+            val response = json.decodeFromString<AgeDetailResponse>(body)
+            val detail = response.toAnimeDetail(emptyList())
+            val supplementalSources = supplementalSourceService.loadCachedSources(animeId)
+            if (supplementalSources.isEmpty()) {
+                detail
+            } else {
+                detail.copy(
+                    sources = detail.sources + supplementalSources.filterNot { s ->
+                        detail.sources.any { it.key == s.key }
+                    },
+                )
+            }
+        }
+    }
+
     suspend fun resolveStream(
         detail: AnimeDetail,
         source: EpisodeSource,

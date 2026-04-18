@@ -20,6 +20,7 @@
             android:layout_width="wrap_content"
             android:layout_height="36dp"
             android:background="@drawable/bg_focusable_small"
+            android:nextFocusDown="@id/speedSettingButton"
             android:paddingStart="14dp"
             android:paddingEnd="14dp"
             android:text="@string/btn_back"
@@ -90,6 +91,8 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
+                android:nextFocusUp="@id/backButton"
+                android:nextFocusDown="@id/autoNextSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -119,6 +122,8 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
+                android:nextFocusUp="@id/speedSettingButton"
+                android:nextFocusDown="@id/sourceOrderSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -156,6 +161,8 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
+                android:nextFocusUp="@id/autoNextSettingButton"
+                android:nextFocusDown="@id/updateSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -203,6 +210,7 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
+                android:nextFocusUp="@id/sourceOrderSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">

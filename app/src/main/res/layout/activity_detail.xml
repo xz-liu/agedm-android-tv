@@ -90,7 +90,6 @@
                     android:id="@+id/heroCard"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/bg_panel"
                     android:orientation="horizontal"
                     android:padding="16dp">
 
@@ -185,8 +184,8 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:text="@string/section_sources"
-                    android:textColor="@color/age_text"
-                    android:textSize="20sp"
+                    android:textColor="@color/age_focus"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
                 <androidx.recyclerview.widget.RecyclerView
@@ -203,8 +202,8 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:text="@string/section_episodes"
-                    android:textColor="@color/age_text"
-                    android:textSize="20sp"
+                    android:textColor="@color/age_focus"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
                 <androidx.recyclerview.widget.RecyclerView
@@ -221,8 +220,8 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:text="@string/section_related"
-                    android:textColor="@color/age_text"
-                    android:textSize="20sp"
+                    android:textColor="@color/age_focus"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
                 <androidx.recyclerview.widget.RecyclerView
@@ -239,8 +238,8 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:text="@string/section_similar"
-                    android:textColor="@color/age_text"
-                    android:textSize="20sp"
+                    android:textColor="@color/age_focus"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
                 <androidx.recyclerview.widget.RecyclerView

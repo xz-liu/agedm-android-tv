@@ -6,6 +6,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -106,6 +108,7 @@ class PlayerActivity : AppCompatActivity() {
     private var resolveJob: Job? = null
     private var parserPollJob: Job? = null
     private var skipOsdJob: Job? = null
+    private var controlsHideJob: Job? = null
     private var controlsVisible = false
     private var drawerVisible = false
     private var autoHideAfterReady = true
@@ -153,6 +156,7 @@ class PlayerActivity : AppCompatActivity() {
         resolveJob?.cancel()
         parserPollJob?.cancel()
         skipOsdJob?.cancel()
+        controlsHideJob?.cancel()
         parserRequest?.deferred?.cancel()
         persistCurrentProgress()
         parserWebView?.apply {
@@ -168,6 +172,9 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
+            if (controlsVisible && !drawerVisible && event.keyCode != KeyEvent.KEYCODE_BACK) {
+                scheduleControlsHide()
+            }
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> {
                     handleBackPress()
@@ -1343,14 +1350,8 @@ class PlayerActivity : AppCompatActivity() {
         val target = (player.currentPosition + deltaMs).coerceIn(0L, duration)
         player.seekTo(target)
         updateProgressUi()
-        binding.loadingText.isVisible = true
-        binding.loadingText.text = if (deltaMs > 0) "快进到 ${formatPlaybackTime(target)}" else "快退到 ${formatPlaybackTime(target)}"
-        lifecycleScope.launch {
-            delay(800)
-            if (!player.isLoading) {
-                binding.loadingText.isVisible = false
-            }
-        }
+        val label = if (deltaMs > 0) "快进到 ${formatPlaybackTime(target)}" else "快退到 ${formatPlaybackTime(target)}"
+        showSkipOsd(label)
     }
 
     private fun showSkipOsd(message: String) {
@@ -1366,10 +1367,24 @@ class PlayerActivity : AppCompatActivity() {
     private fun openDrawer() {
         drawerVisible = true
         controlsVisible = true
+        controlsHideJob?.cancel()
+
+        binding.overlayScrim.alpha = 1f
         binding.overlayScrim.isVisible = true
+        binding.topInfoContainer.alpha = 1f
         binding.topInfoContainer.isVisible = true
         binding.bottomControlContainer.isVisible = false
+
+        val drawerOffsetPx = 360f * resources.displayMetrics.density
+        binding.episodeDrawer.animate().cancel()
+        binding.episodeDrawer.translationX = drawerOffsetPx
         binding.episodeDrawer.isVisible = true
+        binding.episodeDrawer.animate()
+            .translationX(0f)
+            .setDuration(220L)
+            .setInterpolator(DecelerateInterpolator(2f))
+            .start()
+
         drawerPreviewSourceIndex = currentSourceIndex
         drawerPreviewEpisodeIndex = currentEpisodeIndex
         renderDrawerEpisodePreview(animate = false, direction = 1)
@@ -1384,11 +1399,23 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun closeDrawer() {
         drawerVisible = false
-        binding.episodeDrawer.isVisible = false
+        val drawerOffsetPx = 360f * resources.displayMetrics.density
+        binding.episodeDrawer.animate().cancel()
+        binding.episodeDrawer.animate()
+            .translationX(drawerOffsetPx)
+            .setDuration(180L)
+            .setInterpolator(AccelerateInterpolator())
+            .withEndAction {
+                binding.episodeDrawer.isVisible = false
+                binding.episodeDrawer.translationX = 0f
+            }
+            .start()
+
         binding.overlayScrim.isVisible = controlsVisible
         binding.bottomControlContainer.isVisible = controlsVisible
         if (controlsVisible) {
             binding.playPauseButton.requestFocus()
+            scheduleControlsHide()
         } else {
             binding.playerRoot.requestFocus()
         }
@@ -1396,20 +1423,56 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun showControls() {
         controlsVisible = true
-        binding.overlayScrim.isVisible = true
-        binding.topInfoContainer.isVisible = true
-        binding.bottomControlContainer.isVisible = true
+        fadeIn(binding.overlayScrim)
+        fadeIn(binding.topInfoContainer)
+        fadeIn(binding.bottomControlContainer)
         binding.playPauseButton.requestFocus()
+        scheduleControlsHide()
     }
 
     private fun hideControls() {
+        controlsHideJob?.cancel()
         controlsVisible = false
-        binding.topInfoContainer.isVisible = false
-        binding.bottomControlContainer.isVisible = false
+        fadeOut(binding.topInfoContainer)
+        fadeOut(binding.bottomControlContainer)
         if (!drawerVisible) {
-            binding.overlayScrim.isVisible = false
+            fadeOut(binding.overlayScrim)
         }
         binding.playerRoot.requestFocus()
+    }
+
+    private fun scheduleControlsHide() {
+        controlsHideJob?.cancel()
+        controlsHideJob = lifecycleScope.launch {
+            delay(CONTROLS_AUTO_HIDE_MS)
+            if (controlsVisible && !drawerVisible) {
+                hideControls()
+            }
+        }
+    }
+
+    private fun fadeIn(view: View, durationMs: Long = 150L) {
+        view.animate().cancel()
+        view.alpha = 0f
+        view.isVisible = true
+        view.animate()
+            .alpha(1f)
+            .setDuration(durationMs)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    private fun fadeOut(view: View, durationMs: Long = 120L) {
+        view.animate().cancel()
+        view.animate()
+            .alpha(0f)
+            .setDuration(durationMs)
+            .setInterpolator(AccelerateInterpolator())
+            .withEndAction {
+                view.isVisible = false
+                view.alpha = 1f
+            }
+            .start()
     }
 
     private fun isDrawerListFocused(): Boolean {
@@ -1515,6 +1578,7 @@ class PlayerActivity : AppCompatActivity() {
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
         private const val PARSER_TIMEOUT_MS = 20_000L
         private const val PARSER_POLL_INTERVAL_MS = 500L
+        private const val CONTROLS_AUTO_HIDE_MS = 4_000L
         private const val PARSER_POLL_RETRY_COUNT = 24
         private const val PARSER_BRIDGE_NAME = "AgeTvParserBridge"
         private const val PARSER_PROBE_SCRIPT =

@@ -111,25 +111,27 @@ class DetailActivity : AppCompatActivity() {
         }
         binding.playButton.setOnClickListener {
             val loadedDetail = detail ?: return@setOnClickListener
-            val source = loadedDetail.sources.getOrNull(selectedSourceIndex) ?: return@setOnClickListener
-            val episode = source.episodes.getOrNull(selectedEpisodeIndex) ?: return@setOnClickListener
-            launchPlayer(
-                sourceIndex = selectedSourceIndex,
-                episodeIndex = episode.index,
-                preferredSourceKey = source.key,
-            )
+            val record = app.playbackStore.getRecord(loadedDetail.animeId)
+            if (record != null) {
+                launchPlayer(
+                    sourceIndex = selectedSourceIndexFor(record.sourceKey),
+                    episodeIndex = record.episodeIndex,
+                    preferredSourceKey = record.sourceKey,
+                    resumePositionMs = record.positionMs,
+                    preferResumePrompt = false,
+                )
+            } else {
+                val source = loadedDetail.sources.getOrNull(selectedSourceIndex) ?: return@setOnClickListener
+                val episode = source.episodes.getOrNull(selectedEpisodeIndex) ?: return@setOnClickListener
+                launchPlayer(
+                    sourceIndex = selectedSourceIndex,
+                    episodeIndex = episode.index,
+                    preferredSourceKey = source.key,
+                )
+            }
         }
         binding.refreshSourcesButton.setOnClickListener { refreshSources() }
-        binding.continueButton.setOnClickListener {
-            val record = detail?.animeId?.let(app.playbackStore::getRecord) ?: return@setOnClickListener
-            launchPlayer(
-                sourceIndex = selectedSourceIndexFor(record.sourceKey),
-                episodeIndex = record.episodeIndex,
-                preferredSourceKey = record.sourceKey,
-                resumePositionMs = record.positionMs,
-                preferResumePrompt = false,
-            )
-        }
+        binding.continueButton.isVisible = false
     }
 
     private fun setupBackBehavior() {
@@ -155,20 +157,33 @@ class DetailActivity : AppCompatActivity() {
             showError("无效的动画 ID")
             return
         }
-        binding.loadingLayout.isVisible = true
-        binding.errorText.isVisible = false
-        binding.detailScrollView.isVisible = false
         lifecycleScope.launch {
+            var showingCached = false
+            val cached = runCatching { app.ageRepository.peekDetail(animeId) }.getOrNull()
+            if (cached != null) {
+                val ordered = cached.copy(
+                    sources = cached.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
+                )
+                detail = ordered
+                bindDetail(ordered, requestFocus = true)
+                showingCached = true
+            } else {
+                binding.loadingLayout.isVisible = true
+                binding.errorText.isVisible = false
+                binding.detailScrollView.isVisible = false
+            }
             runCatching { app.ageRepository.fetchDetail(animeId) }
                 .onSuccess { loadedDetail ->
                     val orderedDetail = loadedDetail.copy(
                         sources = loadedDetail.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
                     )
                     detail = orderedDetail
-                    bindDetail(orderedDetail, requestFocus = true)
+                    bindDetail(orderedDetail, requestFocus = !showingCached)
                 }
                 .onFailure { error ->
-                    showError("详情加载失败：${error.message.orEmpty()}")
+                    if (!showingCached) {
+                        showError("详情加载失败：${error.message.orEmpty()}")
+                    }
                 }
         }
     }
@@ -211,8 +226,8 @@ class DetailActivity : AppCompatActivity() {
         binding.similarTitle.isVisible = loadedDetail.similar.isNotEmpty()
         binding.similarRecycler.isVisible = loadedDetail.similar.isNotEmpty()
 
-        binding.continueButton.isVisible = record != null
-        binding.continueButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: getString(io.agedm.tv.R.string.btn_continue)
+        binding.playButton.text = record?.let { "继续 ${it.episodeLabel}" }
+            ?: getString(io.agedm.tv.R.string.btn_play_now)
         updateRefreshSourcesButton()
         if (requestFocus) {
             binding.playButton.requestFocus()
