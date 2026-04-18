@@ -22,6 +22,7 @@ data class MirrorItem(
     val animeId: Long,
     val title: String,
     val badge: String,
+    val cover: String = "",
 )
 
 class LinkCastManager(private val repository: AgeRepository) {
@@ -139,10 +140,17 @@ class LinkCastManager(private val repository: AgeRepository) {
         }
 
         private fun handleMirror(session: IHTTPSession): Response {
-            val files = HashMap<String, String>()
             return try {
-                session.parseBody(files)
-                val body = files["postData"] ?: return json("{\"ok\":true}")
+                val len = session.headers["content-length"]?.toIntOrNull() ?: 0
+                if (len <= 0) return json("{\"ok\":true}")
+                val bytes = ByteArray(len)
+                var offset = 0
+                while (offset < len) {
+                    val n = session.inputStream.read(bytes, offset, len - offset)
+                    if (n == -1) break
+                    offset += n
+                }
+                val body = String(bytes, 0, offset, Charsets.UTF_8)
                 val obj = JSONObject(body)
                 val query = obj.optString("query", "")
                 val arr = obj.optJSONArray("results") ?: JSONArray()
@@ -153,6 +161,7 @@ class LinkCastManager(private val repository: AgeRepository) {
                             animeId = r.optLong("id"),
                             title = r.optString("title", ""),
                             badge = r.optString("badge", ""),
+                            cover = r.optString("cover", ""),
                         ))
                     }
                 }

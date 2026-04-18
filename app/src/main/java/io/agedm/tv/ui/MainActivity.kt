@@ -6,14 +6,11 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+
 import android.os.Bundle
 import android.text.InputType
-import android.text.TextUtils
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.EditText
@@ -27,8 +24,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.R
@@ -37,7 +32,6 @@ import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.BrowseSection
 import io.agedm.tv.data.CatalogQuery
-import io.agedm.tv.data.MirrorItem
 import io.agedm.tv.data.MirrorState
 import io.agedm.tv.data.PlaybackRecord
 import io.agedm.tv.databinding.ActivityMainBinding
@@ -45,12 +39,13 @@ import io.agedm.tv.ui.adapter.BrowseSectionAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import java.util.Calendar
 import java.util.concurrent.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : AppCompatActivity() {
 
@@ -80,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var sectionAdapter: BrowseSectionAdapter
     private lateinit var gridAdapter: PosterCardAdapter
+    private lateinit var mirrorAdapter: PosterCardAdapter
 
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -91,7 +87,6 @@ class MainActivity : AppCompatActivity() {
     private var currentTotal: Int = 0
     private var catalogQuery = CatalogQuery()
     private var rankYear = "all"
-    private var currentCastUrl: String? = null
     private var navIndicator: View? = null
     private var loadJob: Job? = null
     private var loadRequestId: Long = 0L
@@ -146,9 +141,14 @@ class MainActivity : AppCompatActivity() {
     private fun setupRecycler() {
         sectionAdapter = BrowseSectionAdapter(::openDetail)
         gridAdapter = PosterCardAdapter(::openDetail)
+        mirrorAdapter = PosterCardAdapter(::openDetail)
         binding.contentRecycler.itemAnimator = null
         binding.contentRecycler.layoutManager = LinearLayoutManager(this)
         binding.contentRecycler.adapter = sectionAdapter
+        binding.mirrorRecycler.itemAnimator = null
+        binding.mirrorRecycler.layoutManager =
+            LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+        binding.mirrorRecycler.adapter = mirrorAdapter
     }
 
     private fun setupChrome() {
@@ -303,35 +303,39 @@ class MainActivity : AppCompatActivity() {
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
         currentTotal = 0
+
+        val bitmap = app.castQr.value
+        if (bitmap != null) {
+            prepareBrowseContent()
+            applyCastBitmap(requestId, bitmap)
+            return
+        }
+
         renderLoading("正在启动投送服务...")
         loadJob = lifecycleScope.launch {
-            val url = withContext(Dispatchers.IO) { app.linkCastManager.ensureStarted() }
+            val bm = withTimeoutOrNull(15_000) { app.castQr.filterNotNull().first() }
             if (!shouldHandleLoadResult(requestId)) return@launch
-            currentCastUrl = url
-            val bitmap = if (!url.isNullOrBlank()) {
-                withContext(Dispatchers.Default) { createQrBitmap(url) }
-            } else null
-            if (!shouldHandleLoadResult(requestId)) return@launch
-            binding.pageTitle.text = "手机投送"
-            binding.pageSubtitle.text = "扫码搜索动画，一键发送到电视"
-            binding.loadingLayout.isVisible = false
-            binding.contentRecycler.isVisible = false
-            binding.castContent.isVisible = true
-            if (bitmap != null) {
-                binding.castQrImage.setImageBitmap(bitmap)
-                binding.castErrorText.isVisible = false
+            if (bm != null) {
+                applyCastBitmap(requestId, bm)
             } else {
-                binding.castQrImage.setImageDrawable(null)
-                binding.castErrorText.text = app.linkCastManager.status.value
-                binding.castErrorText.isVisible = true
+                showError("投送服务启动失败：${app.linkCastManager.status.value}")
             }
-            updateFocusTargets()
-            animateContentIn(binding.castContent)
+        }
+    }
 
-            // Collect mirror state; cancels automatically when loadJob is cancelled (user navigates away)
-            app.linkCastManager.mirrorState.collect { state ->
-                updateMirrorPanel(state)
-            }
+    private fun applyCastBitmap(requestId: Long, bitmap: Bitmap) {
+        if (!shouldHandleLoadResult(requestId)) return
+        binding.pageTitle.text = "手机投送"
+        binding.pageSubtitle.text = "扫码搜索动画，一键发送到电视"
+        binding.loadingLayout.isVisible = false
+        binding.contentRecycler.isVisible = false
+        binding.castContent.isVisible = true
+        binding.castQrImage.setImageBitmap(bitmap)
+        binding.castErrorText.isVisible = false
+        updateFocusTargets()
+        animateContentIn(binding.castContent)
+        loadJob = lifecycleScope.launch {
+            app.linkCastManager.mirrorState.collect { state -> updateMirrorPanel(state) }
         }
     }
 
@@ -875,17 +879,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun createQrBitmap(content: String): Bitmap {
-        val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 1000, 1000)
-        val bitmap = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.RGB_565)
-        for (x in 0 until matrix.width) {
-            for (y in 0 until matrix.height) {
-                bitmap.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
-            }
-        }
-        return bitmap
-    }
-
     private fun updateMirrorPanel(state: MirrorState) {
         val hasQuery = state.query.isNotBlank()
         binding.mirrorQueryText.text = if (hasQuery) "「${state.query}」" else "等待手机搜索..."
@@ -893,63 +886,25 @@ class MainActivity : AppCompatActivity() {
             if (hasQuery) getColor(R.color.age_text) else getColor(R.color.age_text_muted),
         )
 
-        binding.mirrorResultsList.removeAllViews()
-        if (state.results.isEmpty()) {
-            binding.mirrorResultsList.addView(
-                TextView(this).apply {
-                    text = if (hasQuery) "没有找到相关动画" else "搜索结果会实时显示在这里"
-                    setTextColor(getColor(R.color.age_text_muted))
-                    textSize = 13f
-                    setPadding(0, dpToPx(16), 0, 0)
-                },
+        val cards = state.results.map { item ->
+            AnimeCard(
+                animeId = item.animeId,
+                title = item.title,
+                cover = item.cover,
+                badge = item.badge,
+                subtitle = "",
             )
-        } else {
-            state.results.forEachIndexed { index, item ->
-                if (index > 0) {
-                    binding.mirrorResultsList.addView(
-                        View(this).apply {
-                            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 1)
-                            setBackgroundColor(Color.parseColor("#1b3549"))
-                        },
-                    )
-                }
-                binding.mirrorResultsList.addView(createMirrorRow(item))
-            }
         }
+        mirrorAdapter.submitList(cards)
 
-        binding.mirrorResultsList.alpha = 0f
-        binding.mirrorResultsList.animate().alpha(1f).setDuration(160).start()
-    }
+        val hasResults = cards.isNotEmpty()
+        binding.mirrorRecycler.isVisible = hasResults
+        binding.mirrorEmptyText.isVisible = !hasResults
+        binding.mirrorEmptyText.text = if (hasQuery) "没有找到相关动画" else "搜索结果会实时显示在这里"
 
-    private fun createMirrorRow(item: MirrorItem): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
-            setPadding(0, dpToPx(11), 0, dpToPx(11))
-
-            addView(
-                TextView(this@MainActivity).apply {
-                    text = item.title
-                    setTextColor(getColor(R.color.age_text))
-                    textSize = 13f
-                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                },
-            )
-            if (item.badge.isNotBlank()) {
-                addView(
-                    TextView(this@MainActivity).apply {
-                        text = item.badge
-                        setTextColor(Color.parseColor("#6ed9b8"))
-                        textSize = 11f
-                        layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).also {
-                            it.marginStart = dpToPx(10)
-                            it.gravity = Gravity.CENTER_VERTICAL
-                        }
-                    },
-                )
-            }
+        if (hasResults) {
+            binding.mirrorRecycler.alpha = 0f
+            binding.mirrorRecycler.animate().alpha(1f).setDuration(160).start()
         }
     }
 
