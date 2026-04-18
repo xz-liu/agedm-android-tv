@@ -45,13 +45,9 @@ class SettingsActivity : AppCompatActivity() {
         val autoNextEnabled = app.playbackStore.isAutoNextEnabled()
         val sourceOrder = app.playbackStore.getSourcePriority()
 
-        binding.speedSettingButton.text = "默认倍速 · ${formatSpeed(speed)}x"
-        binding.autoNextSettingButton.text = if (autoNextEnabled) {
-            "自动下一集 · 开"
-        } else {
-            "自动下一集 · 关"
-        }
-        binding.sourceOrderSettingButton.text = "源顺序 · ${formatSourceOrder(sourceOrder)}"
+        binding.speedValueText.text = "${formatSpeed(speed)}x"
+        binding.autoNextValueText.text = if (autoNextEnabled) "开" else "关"
+        binding.sourceOrderValueText.text = formatSourceOrder(sourceOrder)
     }
 
     private fun openSpeedSelector() {
