@@ -1,6 +1,7 @@
 package io.agedm.tv.data
 
 private const val AGE_PROVIDER_ID = "age"
+val SUPPLEMENTAL_PROVIDER_IDS: Set<String> = linkedSetOf("aafun", "dm84")
 
 fun List<EpisodeSource>.mergeDistinctSources(extraSources: List<EpisodeSource>): List<EpisodeSource> {
     if (extraSources.isEmpty()) return this
@@ -29,6 +30,12 @@ fun EpisodeSource.isAgeSource(): Boolean {
 }
 
 fun EpisodeSource.isExternalSource(): Boolean = !isAgeSource()
+
+fun List<EpisodeSource>.loadedSupplementalProviders(): Set<String> {
+    return filter { it.isExternalSource() }
+        .mapTo(linkedSetOf()) { normalizeSourceProvider(it.providerName) }
+        .intersect(SUPPLEMENTAL_PROVIDER_IDS)
+}
 
 fun normalizeSourceProvider(providerName: String): String {
     return providerName.trim().lowercase().ifBlank { AGE_PROVIDER_ID }

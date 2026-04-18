@@ -19,7 +19,8 @@ import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.AnimeDetail
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
-import io.agedm.tv.data.isExternalSource
+import io.agedm.tv.data.SUPPLEMENTAL_PROVIDER_IDS
+import io.agedm.tv.data.loadedSupplementalProviders
 import io.agedm.tv.data.mergeDistinctSources
 import io.agedm.tv.data.orderedByPriority
 import kotlinx.coroutines.flow.collectLatest
@@ -231,8 +232,10 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
-        if (loadedDetail.sources.any { it.isExternalSource() }) return null
-        return if (supplementalSourceLoading) "正在加载其他源..." else "加载其他源"
+        val missingProviders = SUPPLEMENTAL_PROVIDER_IDS - loadedDetail.sources.loadedSupplementalProviders()
+        if (missingProviders.isEmpty()) return null
+        if (supplementalSourceLoading) return "正在加载其他源..."
+        return if (loadedDetail.sources.loadedSupplementalProviders().isEmpty()) "加载其他源" else "继续加载其他源"
     }
 
     private fun onLoadSupplementalSources() {

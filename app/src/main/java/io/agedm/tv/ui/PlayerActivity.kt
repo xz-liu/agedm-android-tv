@@ -7,7 +7,9 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.addCallback
@@ -35,8 +37,9 @@ import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.PlaybackRecord
 import io.agedm.tv.data.ResolvedStream
+import io.agedm.tv.data.SUPPLEMENTAL_PROVIDER_IDS
 import io.agedm.tv.data.SourceResolver
-import io.agedm.tv.data.isExternalSource
+import io.agedm.tv.data.loadedSupplementalProviders
 import io.agedm.tv.data.mergeDistinctSources
 import io.agedm.tv.data.orderedByPriority
 import io.agedm.tv.databinding.ActivityPlayerBinding
@@ -64,6 +67,21 @@ class PlayerActivity : AppCompatActivity() {
         val deferred: CompletableDeferred<ResolvedStream>,
     )
 
+    private inner class ParserJavascriptBridge {
+        @JavascriptInterface
+        fun reportMedia(requestId: Int, url: String?, pageUrl: String?) {
+            if (url.isNullOrBlank()) return
+            runOnUiThread {
+                completeParserRequest(
+                    url = url,
+                    requestId = requestId,
+                    resolvedPageUrl = pageUrl,
+                    verified = true,
+                )
+            }
+        }
+    }
+
     private lateinit var binding: ActivityPlayerBinding
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -72,6 +90,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var sourceAdapter: SourceAdapter
     private lateinit var episodeAdapter: EpisodeAdapter
     private var parserWebView: WebView? = null
+    private val parserJavascriptBridge = ParserJavascriptBridge()
 
     private var detail: AnimeDetail? = null
     private var currentSourceIndex: Int = 0
@@ -306,21 +325,35 @@ class PlayerActivity : AppCompatActivity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            settings.loadsImagesAutomatically = false
+            settings.blockNetworkImage = true
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             settings.userAgentString = PLAYER_USER_AGENT
+            addJavascriptInterface(parserJavascriptBridge, PARSER_BRIDGE_NAME)
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(
                     view: WebView?,
                     request: WebResourceRequest?,
                 ) = super.shouldInterceptRequest(view, request).also {
                     val candidate = request?.url?.toString().orEmpty()
-                    if (looksLikePlayableMediaUrl(candidate)) {
-                        runOnUiThread { completeParserRequest(candidate) }
+                    val isVerified = looksLikePlayableMediaUrl(candidate) || looksLikeDirectStreamRequest(request)
+                    if (isVerified) {
+                        val pageUrl = request?.requestHeaders?.get("Referer")
+                        runOnUiThread {
+                            completeParserRequest(
+                                url = candidate,
+                                resolvedPageUrl = pageUrl,
+                                verified = true,
+                            )
+                        }
                     }
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     val request = parserRequest ?: return
+                    if (url.isNullOrBlank() || url == "about:blank") return
+                    injectParserScripts(request.id)
                     startParserPolling(request.id)
                 }
             }
@@ -715,12 +748,20 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun completeParserRequest(url: String, requestId: Int? = null): Boolean {
+        return completeParserRequest(url, requestId, resolvedPageUrl = null, verified = false)
+    }
+
+    private fun completeParserRequest(
+        url: String,
+        requestId: Int? = null,
+        resolvedPageUrl: String? = null,
+        verified: Boolean = false,
+    ): Boolean {
         val activeRequest = parserRequest ?: return false
         if (requestId != null && requestId != activeRequest.id) return false
 
-        val normalizedUrl = url.trim()
-            .replace("&amp;", "&")
-            .takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        val normalizedUrl = normalizeParserCandidate(url)
+            ?.takeIf { verified || looksLikePlayableMediaUrl(it) }
             ?: return false
 
         if (activeRequest.deferred.isCompleted || activeRequest.deferred.isCancelled) {
@@ -728,16 +769,24 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         val isM3u8 = normalizedUrl.contains(".m3u8", ignoreCase = true)
+        val headerBaseUrl = when (activeRequest.source.resolver) {
+            SourceResolver.WEB_PAGE -> normalizeParserCandidate(resolvedPageUrl) ?: activeRequest.pageUrl
+            SourceResolver.AGE_PARSER -> activeRequest.pageUrl
+        }
+        val headers = when (activeRequest.source.resolver) {
+            SourceResolver.WEB_PAGE -> buildStreamHeaders(headerBaseUrl, activeRequest.source)
+            SourceResolver.AGE_PARSER -> activeRequest.streamHeaders
+        }
         activeRequest.deferred.complete(
             ResolvedStream(
                 streamUrl = normalizedUrl,
-                parserUrl = activeRequest.pageUrl,
+                parserUrl = headerBaseUrl,
                 sourceKey = activeRequest.source.key,
                 sourceLabel = activeRequest.source.label,
                 episode = activeRequest.episode,
                 isM3u8 = isM3u8,
                 mimeType = app.ageRepository.inferMimeType(normalizedUrl, isM3u8),
-                headers = activeRequest.streamHeaders,
+                headers = headers,
             ),
         )
         parserRequest = null
@@ -759,10 +808,7 @@ class PlayerActivity : AppCompatActivity() {
         webView.evaluateJavascript(PARSER_PROBE_SCRIPT) { value ->
             result.complete(decodeJavascriptValue(value))
         }
-        return result.await()
-            ?.replace("&amp;", "&")
-            ?.trim()
-            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        return normalizeParserCandidate(result.await())
     }
 
     private fun decodeJavascriptValue(rawValue: String?): String? {
@@ -786,6 +832,7 @@ class PlayerActivity : AppCompatActivity() {
             lower.contains("global.min.js") ||
             lower.contains("play.min.js") ||
             lower.contains("adposter") ||
+            lower.contains("/player/?url=") ||
             lower.endsWith(".js") ||
             lower.endsWith(".css") ||
             lower.endsWith(".jpg") ||
@@ -803,6 +850,298 @@ class PlayerActivity : AppCompatActivity() {
             lower.contains(".m4s") ||
             lower.contains("bilivideo.com/upgcxcode/") ||
             lower.contains("akamaized.net/obj/")
+    }
+
+    private fun looksLikeDirectStreamRequest(request: WebResourceRequest?): Boolean {
+        val candidate = request?.url?.toString().orEmpty().lowercase()
+        val headers = request?.requestHeaders ?: return false
+        val range = headers["Range"] ?: headers["range"] ?: return false
+        if (!range.startsWith("bytes=")) return false
+        if (!candidate.startsWith("http://") && !candidate.startsWith("https://")) return false
+        if (
+            candidate.endsWith(".js") ||
+            candidate.endsWith(".css") ||
+            candidate.endsWith(".html") ||
+            candidate.endsWith(".json") ||
+            candidate.endsWith(".jpg") ||
+            candidate.endsWith(".jpeg") ||
+            candidate.endsWith(".png") ||
+            candidate.endsWith(".gif") ||
+            candidate.endsWith(".svg") ||
+            candidate.endsWith(".woff") ||
+            candidate.endsWith(".woff2") ||
+            candidate.endsWith(".wasm") ||
+            candidate.endsWith(".ts") ||
+            candidate.endsWith(".m4s") ||
+            candidate.endsWith(".aac") ||
+            candidate.endsWith(".vtt")
+        ) {
+            return false
+        }
+        return true
+    }
+
+    private fun normalizeParserCandidate(rawUrl: String?): String? {
+        val value = rawUrl
+            ?.trim()
+            ?.replace("&amp;", "&")
+            ?.ifBlank { null }
+            ?: return null
+        val normalized = when {
+            value.startsWith("//") -> "https:$value"
+            else -> value
+        }
+        return normalized.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    }
+
+    private fun injectParserScripts(requestId: Int) {
+        parserWebView?.evaluateJavascript(buildParserInjectionScript(requestId), null)
+    }
+
+    private fun buildParserInjectionScript(requestId: Int): String {
+        return """
+            (function() {
+              const REQUEST_ID = $requestId;
+              const BRIDGE_NAME = '${PARSER_BRIDGE_NAME}';
+              if (!window[BRIDGE_NAME]) return;
+              if (window.__agedmParserInjectionId === REQUEST_ID) return;
+              window.__agedmParserInjectionId = REQUEST_ID;
+
+              function report(url, pageUrl) {
+                try {
+                  if (!url) return;
+                  window[BRIDGE_NAME].reportMedia(REQUEST_ID, String(url), String(pageUrl || window.location.href));
+                } catch (e) {}
+              }
+
+              function cleanUrl(value) {
+                if (!value) return '';
+                return String(value).trim().replace(/&amp;/g, '&');
+              }
+
+              function shouldIgnore(url) {
+                if (!url) return true;
+                const lower = url.toLowerCase();
+                return lower.startsWith('blob:') ||
+                  lower.includes('googleads') ||
+                  lower.includes('googlesyndication') ||
+                  lower.includes('doubleclick') ||
+                  lower.endsWith('.js') ||
+                  lower.endsWith('.css') ||
+                  lower.endsWith('.jpg') ||
+                  lower.endsWith('.jpeg') ||
+                  lower.endsWith('.png') ||
+                  lower.endsWith('.gif') ||
+                  lower.endsWith('.svg');
+              }
+
+              function maybeReport(url, targetWindow) {
+                const cleaned = cleanUrl(url);
+                if (!cleaned || shouldIgnore(cleaned)) return false;
+                const absolute = cleaned.startsWith('//') ? 'https:' + cleaned : cleaned;
+                if (!/^https?:\/\//i.test(absolute)) return false;
+                report(absolute, targetWindow && targetWindow.location ? targetWindow.location.href : window.location.href);
+                return true;
+              }
+
+              function processVideoElement(video, targetWindow) {
+                if (!video) return false;
+                if (maybeReport(video.currentSrc || video.src || video.getAttribute('src'), targetWindow)) return true;
+                const sources = video.getElementsByTagName('source');
+                for (let i = 0; i < sources.length; i += 1) {
+                  if (maybeReport(sources[i].getAttribute('src'), targetWindow)) return true;
+                }
+                return false;
+              }
+
+              function scanDocument(doc, targetWindow) {
+                if (!doc) return false;
+                try {
+                  const videos = doc.querySelectorAll('video');
+                  for (let i = 0; i < videos.length; i += 1) {
+                    if (processVideoElement(videos[i], targetWindow)) return true;
+                  }
+                } catch (e) {}
+
+                try {
+                  const tagged = doc.querySelector('[data-video="src"]');
+                  if (tagged && maybeReport(tagged.textContent || '', targetWindow)) return true;
+                } catch (e) {}
+
+                try {
+                  if (targetWindow.art && targetWindow.art.template && targetWindow.art.template.${'$'}video) {
+                    if (maybeReport(targetWindow.art.template.${'$'}video.currentSrc || targetWindow.art.template.${'$'}video.src || '', targetWindow)) {
+                      return true;
+                    }
+                  }
+                } catch (e) {}
+
+                try {
+                  if (targetWindow.art && targetWindow.art.option && targetWindow.art.option.url) {
+                    if (maybeReport(targetWindow.art.option.url, targetWindow)) return true;
+                  }
+                } catch (e) {}
+
+                return false;
+              }
+
+              function installNetworkHooks(targetWindow) {
+                if (!targetWindow || targetWindow.__agedmNetworkHooksId === REQUEST_ID) return;
+                targetWindow.__agedmNetworkHooksId = REQUEST_ID;
+
+                try {
+                  if (targetWindow.Response && targetWindow.Response.prototype && targetWindow.Response.prototype.text) {
+                    const originalText = targetWindow.Response.prototype.text;
+                    targetWindow.Response.prototype.text = function() {
+                      return originalText.apply(this, arguments).then((text) => {
+                        try {
+                          if (String(text || '').trim().startsWith('#EXTM3U')) {
+                            maybeReport(this.url || '', targetWindow);
+                          }
+                        } catch (e) {}
+                        return text;
+                      });
+                    };
+                  }
+                } catch (e) {}
+
+                try {
+                  if (targetWindow.XMLHttpRequest && targetWindow.XMLHttpRequest.prototype && targetWindow.XMLHttpRequest.prototype.open) {
+                    const originalOpen = targetWindow.XMLHttpRequest.prototype.open;
+                    targetWindow.XMLHttpRequest.prototype.open = function() {
+                      const args = arguments;
+                      this.addEventListener('load', function() {
+                        try {
+                          if (String(this.responseText || '').trim().startsWith('#EXTM3U')) {
+                            maybeReport(args[1] || '', targetWindow);
+                          }
+                        } catch (e) {}
+                      });
+                      return originalOpen.apply(this, args);
+                    };
+                  }
+                } catch (e) {}
+              }
+
+              function installVideoObserver(doc, targetWindow) {
+                if (!doc || doc.__agedmVideoObserverId === REQUEST_ID) return;
+                doc.__agedmVideoObserverId = REQUEST_ID;
+
+                const observer = new MutationObserver((mutations) => {
+                  for (let i = 0; i < mutations.length; i += 1) {
+                    const mutation = mutations[i];
+                    if (mutation.type === 'attributes' && mutation.target && mutation.target.nodeName === 'VIDEO') {
+                      if (processVideoElement(mutation.target, targetWindow)) return;
+                    }
+                    for (let j = 0; j < mutation.addedNodes.length; j += 1) {
+                      const node = mutation.addedNodes[j];
+                      if (!node) continue;
+                      if (node.nodeName === 'VIDEO' && processVideoElement(node, targetWindow)) return;
+                      if (node.querySelectorAll) {
+                        const nested = node.querySelectorAll('video');
+                        for (let k = 0; k < nested.length; k += 1) {
+                          if (processVideoElement(nested[k], targetWindow)) return;
+                        }
+                      }
+                    }
+                  }
+                });
+
+                const target = doc.body || doc.documentElement;
+                if (target) {
+                  observer.observe(target, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['src']
+                  });
+                }
+              }
+
+              function installFrameObservers(doc) {
+                if (!doc || doc.__agedmFrameObserverId === REQUEST_ID) return;
+                doc.__agedmFrameObserverId = REQUEST_ID;
+
+                function attachIframe(iframe) {
+                  if (!iframe) return;
+                  const loadHandler = function() {
+                    try {
+                      installIntoWindow(iframe.contentWindow);
+                    } catch (e) {}
+                  };
+                  iframe.addEventListener('load', loadHandler);
+                  loadHandler();
+                }
+
+                try {
+                  const existing = doc.querySelectorAll('iframe');
+                  for (let i = 0; i < existing.length; i += 1) {
+                    attachIframe(existing[i]);
+                  }
+                } catch (e) {}
+
+                const observer = new MutationObserver((mutations) => {
+                  for (let i = 0; i < mutations.length; i += 1) {
+                    const mutation = mutations[i];
+                    for (let j = 0; j < mutation.addedNodes.length; j += 1) {
+                      const node = mutation.addedNodes[j];
+                      if (!node) continue;
+                      if (node.nodeName === 'IFRAME') {
+                        attachIframe(node);
+                      }
+                      if (node.querySelectorAll) {
+                        const nested = node.querySelectorAll('iframe');
+                        for (let k = 0; k < nested.length; k += 1) {
+                          attachIframe(nested[k]);
+                        }
+                      }
+                    }
+                  }
+                });
+
+                const target = doc.body || doc.documentElement;
+                if (target) {
+                  observer.observe(target, {
+                    childList: true,
+                    subtree: true
+                  });
+                }
+              }
+
+              function installIntoWindow(targetWindow) {
+                if (!targetWindow || targetWindow.__agedmParserWindowId === REQUEST_ID) return;
+                targetWindow.__agedmParserWindowId = REQUEST_ID;
+                installNetworkHooks(targetWindow);
+                try {
+                  const doc = targetWindow.document;
+                  if (!doc) return;
+                  installVideoObserver(doc, targetWindow);
+                  installFrameObservers(doc);
+                  scanDocument(doc, targetWindow);
+                } catch (e) {}
+              }
+
+              installIntoWindow(window);
+
+              const timer = window.setInterval(function() {
+                try {
+                  scanDocument(document, window);
+                } catch (e) {}
+                try {
+                  const frames = document.querySelectorAll('iframe');
+                  for (let i = 0; i < frames.length; i += 1) {
+                    try {
+                      installIntoWindow(frames[i].contentWindow);
+                    } catch (e) {}
+                  }
+                } catch (e) {}
+              }, 1000);
+
+              window.setTimeout(function() {
+                window.clearInterval(timer);
+              }, ${PARSER_TIMEOUT_MS});
+            })();
+        """.trimIndent()
     }
 
     private fun togglePlayPause() {
@@ -856,8 +1195,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
-        if (loadedDetail.sources.any { it.isExternalSource() }) return null
-        return if (supplementalSourceLoading) "正在加载其他源..." else "加载其他源"
+        val missingProviders = SUPPLEMENTAL_PROVIDER_IDS - loadedDetail.sources.loadedSupplementalProviders()
+        if (missingProviders.isEmpty()) return null
+        if (supplementalSourceLoading) return "正在加载其他源..."
+        return if (loadedDetail.sources.loadedSupplementalProviders().isEmpty()) "加载其他源" else "继续加载其他源"
     }
 
     private fun loadSupplementalSourcesManually() {
@@ -1110,6 +1451,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val PARSER_TIMEOUT_MS = 20_000L
         private const val PARSER_POLL_INTERVAL_MS = 500L
         private const val PARSER_POLL_RETRY_COUNT = 24
+        private const val PARSER_BRIDGE_NAME = "AgeTvParserBridge"
         private const val PARSER_PROBE_SCRIPT =
             """
             (function() {

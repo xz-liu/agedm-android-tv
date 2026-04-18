@@ -29,9 +29,11 @@ internal class SupplementalSourceService(
         val stale = loadCachedSources(animeId)
         if (title.isBlank()) return stale
 
+        val staleByProvider = stale.groupBy { normalizeSourceProvider(it.providerName) }
         val sources = providers.flatMap { provider ->
-            runCatching { fetchProviderSources(provider, title) }
+            val fresh = runCatching { fetchProviderSources(provider, title) }
                 .getOrElse { emptyList() }
+            fresh.ifEmpty { staleByProvider[provider.id].orEmpty() }
         }
 
         if (sources.isNotEmpty()) {
@@ -144,9 +146,9 @@ internal class SupplementalSourceService(
         return document.selectXpath(provider.chapterRoadsXpath)
             .mapNotNull { roadNode ->
                 val episodes = roadNode.selectXpath(relativeXpath(provider.chapterResultXpath), Element::class.java)
-                    .mapNotNull { episodeNode ->
+                    .mapNotNull episodeMap@{ episodeNode ->
                         val href = episodeNode.attr("href").trim()
-                        if (href.isBlank()) return@mapNotNull null
+                        if (href.isBlank()) return@episodeMap null
                         ProviderEpisode(
                             label = episodeNode.text().trim(),
                             url = buildAbsoluteUrl(provider.baseUrl, href),
