@@ -6,10 +6,14 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.databinding.ActivitySettingsBinding
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -36,18 +40,27 @@ class SettingsActivity : AppCompatActivity() {
         binding.backButton.setOnClickListener { finish() }
         binding.speedSettingButton.setOnClickListener { openSpeedSelector() }
         binding.autoNextSettingButton.setOnClickListener { toggleAutoNext() }
+        binding.skipIntroSettingButton.setOnClickListener { openSkipIntroSelector() }
         binding.sourceOrderSettingButton.setOnClickListener { openSourceOrderSelector() }
         binding.updateSettingButton.setOnClickListener { openLatestApk() }
+        binding.clearCacheSettingButton.setOnClickListener { confirmClearCache() }
+        binding.clearHistorySettingButton.setOnClickListener { confirmClearHistory() }
     }
 
     private fun renderSettings() {
         val speed = app.playbackStore.getPlaybackSpeed()
         val autoNextEnabled = app.playbackStore.isAutoNextEnabled()
         val sourceOrder = app.playbackStore.getSourcePriority()
+        val skipIntroMs = app.playbackStore.getSkipIntroDurationMs()
 
         binding.speedValueText.text = "${formatSpeed(speed)}x"
         binding.autoNextValueText.text = if (autoNextEnabled) "开" else "关"
+        binding.skipIntroValueText.text = formatSkipDuration(skipIntroMs)
         binding.sourceOrderValueText.text = formatSourceOrder(sourceOrder)
+        lifecycleScope.launch {
+            val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }
+            binding.cacheSizeText.text = formatBytes(bytes)
+        }
     }
 
     private fun openSpeedSelector() {
@@ -93,6 +106,51 @@ class SettingsActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun openSkipIntroSelector() {
+        val labels = arrayOf("60 秒", "75 秒", "88 秒", "90 秒", "100 秒")
+        val values = longArrayOf(60_000L, 75_000L, 88_000L, 90_000L, 100_000L)
+        val current = app.playbackStore.getSkipIntroDurationMs()
+        val currentIndex = values.indexOfFirst { it == current }.coerceAtLeast(0)
+        MaterialAlertDialogBuilder(this)
+            .setTitle("跳过片头时长")
+            .setSingleChoiceItems(labels, currentIndex) { dialog, which ->
+                app.playbackStore.setSkipIntroDurationMs(values[which])
+                renderSettings()
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun confirmClearCache() {
+        lifecycleScope.launch {
+            val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }
+            MaterialAlertDialogBuilder(this@SettingsActivity)
+                .setTitle("清除缓存")
+                .setMessage("将清除 ${formatBytes(bytes)} 的缓存数据，下次打开各页面时需要重新加载。")
+                .setPositiveButton("清除") { _, _ ->
+                    lifecycleScope.launch {
+                        withContext(Dispatchers.IO) { app.contentCache.clearAll() }
+                        renderSettings()
+                        Toast.makeText(this@SettingsActivity, "缓存已清除", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+    }
+
+    private fun confirmClearHistory() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("清除观看记录")
+            .setMessage("将删除全部观看历史，此操作不可恢复。")
+            .setPositiveButton("清除") { _, _ ->
+                app.playbackStore.clearAllRecords()
+                Toast.makeText(this, "观看记录已清除", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun openLatestApk() {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LATEST_APK_URL))
         if (intent.resolveActivity(packageManager) == null) {
@@ -107,6 +165,21 @@ class SettingsActivity : AppCompatActivity() {
             String.format("%.1f", speed)
         } else {
             speed.toString()
+        }
+    }
+
+    private fun formatSkipDuration(ms: Long): String {
+        val sec = ms / 1000
+        val min = sec / 60
+        val rem = sec % 60
+        return if (min > 0) "$min 分 $rem 秒" else "$sec 秒"
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        return when {
+            bytes < 1024 -> "${bytes} B"
+            bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)} KB"
+            else -> "${"%.1f".format(bytes / (1024.0 * 1024))} MB"
         }
     }
 

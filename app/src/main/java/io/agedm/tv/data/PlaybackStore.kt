@@ -36,6 +36,18 @@ class PlaybackStore(context: Context) {
     }
 
     @Synchronized
+    fun deleteRecord(animeId: Long) {
+        val records = readAll()
+        records.remove(animeId)
+        writeAll(records)
+    }
+
+    @Synchronized
+    fun clearAllRecords() {
+        writeAll(emptyMap())
+    }
+
+    @Synchronized
     fun isAutoNextEnabled(): Boolean {
         return prefs.getBoolean(KEY_AUTO_NEXT, true)
     }
@@ -72,6 +84,16 @@ class PlaybackStore(context: Context) {
     }
 
     @Synchronized
+    fun getSkipIntroDurationMs(): Long {
+        return prefs.getLong(KEY_SKIP_INTRO_MS, DEFAULT_SKIP_INTRO_MS)
+    }
+
+    @Synchronized
+    fun setSkipIntroDurationMs(durationMs: Long) {
+        prefs.edit().putLong(KEY_SKIP_INTRO_MS, durationMs).apply()
+    }
+
+    @Synchronized
     fun setSourcePriority(order: List<String>) {
         val normalized = buildList {
             add(SOURCE_AGE)
@@ -105,6 +127,8 @@ class PlaybackStore(context: Context) {
         private const val KEY_AUTO_NEXT = "auto_next"
         private const val KEY_PLAYBACK_SPEED = "playback_speed"
         private const val KEY_SOURCE_PRIORITY = "source_priority"
+        private const val KEY_SKIP_INTRO_MS = "skip_intro_ms"
+        private const val DEFAULT_SKIP_INTRO_MS = 88_000L
 
         const val SOURCE_AGE = "age"
         const val SOURCE_AAFUN = "aafun"

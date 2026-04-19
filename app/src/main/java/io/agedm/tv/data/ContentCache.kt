@@ -69,6 +69,17 @@ class ContentCache(private val dir: File) {
         } catch (_: Exception) {}
     }
 
+    @Synchronized
+    fun clearAll() {
+        try { dir.listFiles()?.forEach { it.delete() } } catch (_: Exception) {}
+    }
+
+    fun sizeBytes(): Long {
+        return try {
+            dir.listFiles()?.sumOf { it.length() } ?: 0L
+        } catch (_: Exception) { 0L }
+    }
+
     fun evictExpired(maxAge: Long = MAX_AGE_MS) {
         try {
             dir.listFiles()?.forEach { file ->

@@ -198,8 +198,13 @@ class PlayerActivity : AppCompatActivity() {
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (!controlsVisible && !drawerVisible) {
-                        seekBy(88_000L)
-                        showSkipOsd("跳过片头  +1:28")
+                        val skipMs = app.playbackStore.getSkipIntroDurationMs()
+                        seekBy(skipMs)
+                        val sec = skipMs / 1000
+                        val min = sec / 60
+                        val rem = sec % 60
+                        val label = if (min > 0) "$min:${rem.toString().padStart(2, '0')}" else "${sec}s"
+                        showSkipOsd("跳过片头  +$label")
                         return true
                     }
                 }

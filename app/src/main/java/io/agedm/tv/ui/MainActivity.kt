@@ -191,7 +191,7 @@ class MainActivity : AppCompatActivity() {
             if (screen == currentScreen) return@OnFocusChangeListener
             focusNavJob = lifecycleScope.launch {
                 delay(NAV_FOCUS_DELAY_MS)
-                openScreen(screen)
+                if (view.isFocused) openScreen(screen)
             }
         }
         listOf(
@@ -289,6 +289,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openScreen(screen: Screen, page: Int = 1) {
+        if (screen != Screen.HISTORY) gridAdapter.onLongClick = null
         slideFromRight = when {
             page != currentPage -> page > currentPage
             else -> screen.navIndex() >= currentScreen.navIndex()
@@ -434,6 +435,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHistory() {
+        gridAdapter.onLongClick = { card ->
+            MaterialAlertDialogBuilder(this)
+                .setTitle("删除记录")
+                .setMessage("删除「${card.title}」的观看记录？")
+                .setPositiveButton("删除") { _, _ ->
+                    app.playbackStore.deleteRecord(card.animeId)
+                    loadHistory()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
         renderLoading("正在读取观看记录...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)

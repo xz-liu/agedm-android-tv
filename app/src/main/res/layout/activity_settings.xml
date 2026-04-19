@@ -123,7 +123,7 @@
                 android:focusable="true"
                 android:gravity="center_vertical"
                 android:nextFocusUp="@id/speedSettingButton"
-                android:nextFocusDown="@id/sourceOrderSettingButton"
+                android:nextFocusDown="@id/skipIntroSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -138,6 +138,37 @@
 
                 <TextView
                     android:id="@+id/autoNextValueText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/age_text_muted"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/skipIntroSettingButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="2dp"
+                android:background="@drawable/bg_focusable_small"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:nextFocusUp="@id/autoNextSettingButton"
+                android:nextFocusDown="@id/sourceOrderSettingButton"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="跳过片头时长"
+                    android:textColor="@color/age_text"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/skipIntroValueText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:textColor="@color/age_text_muted"
@@ -161,7 +192,7 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
-                android:nextFocusUp="@id/autoNextSettingButton"
+                android:nextFocusUp="@id/skipIntroSettingButton"
                 android:nextFocusDown="@id/updateSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
@@ -211,6 +242,7 @@
                 android:focusable="true"
                 android:gravity="center_vertical"
                 android:nextFocusUp="@id/sourceOrderSettingButton"
+                android:nextFocusDown="@id/clearCacheSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -240,6 +272,67 @@
                 android:text="@string/settings_update_hint"
                 android:textColor="@color/age_text_muted"
                 android:textSize="12sp" />
+
+            <LinearLayout
+                android:id="@+id/clearCacheSettingButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="2dp"
+                android:background="@drawable/bg_focusable_small"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:nextFocusUp="@id/updateSettingButton"
+                android:nextFocusDown="@id/clearHistorySettingButton"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="清除缓存"
+                    android:textColor="@color/age_text"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/cacheSizeText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/age_text_muted"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/clearHistorySettingButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="2dp"
+                android:background="@drawable/bg_focusable_small"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:nextFocusUp="@id/clearCacheSettingButton"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="清除观看记录"
+                    android:textColor="@color/age_text"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="→"
+                    android:textColor="@color/age_text_muted"
+                    android:textSize="15sp" />
+            </LinearLayout>
 
         </LinearLayout>
     </ScrollView>

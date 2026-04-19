@@ -12,6 +12,8 @@ class PosterCardAdapter(
     private val onSelected: (AnimeCard) -> Unit,
 ) : RecyclerView.Adapter<PosterCardAdapter.PosterViewHolder>() {
 
+    var onLongClick: ((AnimeCard) -> Unit)? = null
+
     private var items: List<AnimeCard> = emptyList()
 
     fun submitList(cards: List<AnimeCard>) {
@@ -44,6 +46,12 @@ class PosterCardAdapter(
             binding.badgeText.visibility =
                 if (item.badge.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
             binding.cardRoot.setOnClickListener { onSelected(item) }
+            val longClickHandler = onLongClick
+            if (longClickHandler != null) {
+                binding.cardRoot.setOnLongClickListener { longClickHandler(item); true }
+            } else {
+                binding.cardRoot.setOnLongClickListener(null)
+            }
             binding.cardRoot.setOnFocusChangeListener { _, hasFocus ->
                 binding.titleText.setTextColor(if (hasFocus) Color.parseColor("#E8FFF7") else Color.WHITE)
             }
