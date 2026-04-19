@@ -93,8 +93,10 @@ class MainActivity : AppCompatActivity() {
     private var loadRequestId: Long = 0L
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
+    private var navFocusSwitchArmDeadlineMs: Long = 0L
     private var lastNavUpPressUptimeMs: Long = 0L
     private var slideFromRight = true
+    private var pendingFocusRestoreViewId: Int? = null
     private val navButtons: List<Button>
         get() = listOf(
             binding.navCastButton,
@@ -148,11 +150,16 @@ class MainActivity : AppCompatActivity() {
         // was reloaded while the dialog was open), focus can land on the wrong nav button
         // and trigger focusNavJob to switch screens. Cancel the job and correct focus here.
         focusNavJob?.cancel()
+        clearNavFocusSwitchArm()
         binding.root.post {
-            val focused = currentFocus ?: return@post
+            if (restorePendingFocusIfPossible()) return@post
+            val focused = currentFocus
+            if (focused == null) {
+                requestBestContentFocus()
+                return@post
+            }
             if (isInNavArea(focused) && focused.id != currentNavButton().id) {
-                binding.contentRecycler.getChildAt(0)?.requestFocus()
-                    ?: currentNavButton().requestFocus()
+                requestBestContentFocus()
             }
         }
     }
@@ -195,6 +202,7 @@ class MainActivity : AppCompatActivity() {
         val focusListener = View.OnFocusChangeListener { view, hasFocus ->
             if (!hasFocus) return@OnFocusChangeListener
             focusNavJob?.cancel()
+            if (!consumeNavFocusSwitchArm()) return@OnFocusChangeListener
             val screen = when (view.id) {
                 R.id.navCastButton -> Screen.CAST
                 R.id.navHomeButton -> Screen.HOME
@@ -231,6 +239,7 @@ class MainActivity : AppCompatActivity() {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val focused = currentFocus
             if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && focused != null && isInNavArea(focused)) {
+                clearNavFocusSwitchArm()
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastNavUpPressUptimeMs <= SETTINGS_SHORTCUT_WINDOW_MS) {
                     lastNavUpPressUptimeMs = 0L
@@ -240,6 +249,13 @@ class MainActivity : AppCompatActivity() {
                     showOverlayMessage("连按 2 次向上打开设置")
                 }
                 return true
+            }
+            if (focused != null && isInNavArea(focused) &&
+                (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+            ) {
+                armNavFocusSwitch()
+            } else {
+                clearNavFocusSwitchArm()
             }
             if (event.keyCode != KeyEvent.KEYCODE_DPAD_UP || focused == null || !isInNavArea(focused)) {
                 lastNavUpPressUptimeMs = 0L
@@ -306,6 +322,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openScreen(screen: Screen, page: Int = 1) {
+        clearNavFocusSwitchArm()
         if (screen != Screen.HISTORY) gridAdapter.onLongClick = null
         slideFromRight = when {
             page != currentPage -> page > currentPage
@@ -740,7 +757,7 @@ class MainActivity : AppCompatActivity() {
             button.isVisible = true
             button.text = action.labelProvider()
             button.setOnClickListener {
-                showFilterDialog(action)
+                showFilterDialog(action, button.id)
             }
         }
 
@@ -750,15 +767,25 @@ class MainActivity : AppCompatActivity() {
         updateFocusTargets()
     }
 
-    private fun showFilterDialog(action: FilterAction) {
+    private fun showFilterDialog(action: FilterAction, anchorViewId: Int) {
         val selectedLabel = action.labelProvider().substringAfter('·', "").trim()
         val items = action.options.map { option ->
             if (option.label == selectedLabel) "✓ ${option.label}" else option.label
         }.toTypedArray()
+        focusNavJob?.cancel()
+        clearNavFocusSwitchArm()
+        pendingFocusRestoreViewId = anchorViewId
         MaterialAlertDialogBuilder(this)
             .setTitle(action.title)
             .setItems(items) { _, which ->
                 action.onSelected(action.options[which].value)
+            }
+            .setOnDismissListener {
+                binding.root.post {
+                    if (!restorePendingFocusIfPossible()) {
+                        requestBestContentFocus()
+                    }
+                }
             }
             .show()
     }
@@ -841,6 +868,42 @@ class MainActivity : AppCompatActivity() {
             button.nextFocusUpId = currentNavButton().id
             button.nextFocusDownId = binding.contentRecycler.id
         }
+    }
+
+    private fun restorePendingFocusIfPossible(): Boolean {
+        val targetId = pendingFocusRestoreViewId ?: return false
+        val target = findViewById<View>(targetId)
+        return if (target != null && target.isShown && target.isFocusable) {
+            pendingFocusRestoreViewId = null
+            target.requestFocus()
+        } else {
+            false
+        }
+    }
+
+    private fun requestBestContentFocus() {
+        val firstFilter = visibleFilterButtons().firstOrNull()
+        when {
+            firstFilter != null && firstFilter.isShown -> firstFilter.requestFocus()
+            currentScreen == Screen.CAST && binding.castContent.isVisible -> binding.castContent.requestFocus()
+            binding.contentRecycler.findFocus() != null -> binding.contentRecycler.findFocus().requestFocus()
+            binding.contentRecycler.getChildAt(0) != null -> binding.contentRecycler.getChildAt(0).requestFocus()
+            else -> currentNavButton().requestFocus()
+        }
+    }
+
+    private fun armNavFocusSwitch() {
+        navFocusSwitchArmDeadlineMs = SystemClock.elapsedRealtime() + NAV_FOCUS_ARM_WINDOW_MS
+    }
+
+    private fun consumeNavFocusSwitchArm(): Boolean {
+        val armed = SystemClock.elapsedRealtime() <= navFocusSwitchArmDeadlineMs
+        navFocusSwitchArmDeadlineMs = 0L
+        return armed
+    }
+
+    private fun clearNavFocusSwitchArm() {
+        navFocusSwitchArmDeadlineMs = 0L
     }
 
     private fun shouldBlockEdgeNavigation(focused: View, keyCode: Int): Boolean {
@@ -1043,6 +1106,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
         private const val NAV_FOCUS_DELAY_MS = 300L
+        private const val NAV_FOCUS_ARM_WINDOW_MS = 600L
         private const val SETTINGS_SHORTCUT_WINDOW_MS = 1_100L
         private const val STALE_REFRESH_DELAY_MS = 180L
 
