@@ -20,7 +20,7 @@
         android:background="@drawable/bg_scrim"
         android:visibility="gone" />
 
-    <!-- Title area: gradient fades from dark at top to transparent -->
+    <!-- Title / top info: gradient from dark top to transparent -->
     <LinearLayout
         android:id="@+id/topInfoContainer"
         android:layout_width="match_parent"
@@ -50,20 +50,29 @@
             android:textSize="13sp" />
     </LinearLayout>
 
-    <!-- Controls area: gradient fades from transparent to dark at bottom -->
+    <!--
+        Unified bottom overlay.
+        Layout order (top → bottom inside panel):
+          1. Progress row + control buttons   ← always visible when overlay is open
+          2. episodeSection (GONE by default) ← revealed by DOWN key
+          3. sourceSection  (GONE by default) ← revealed together with episodes
+        When the panel is anchored to the bottom of the screen, pressing DOWN
+        from the controls row naturally enters the episode/source rows.
+    -->
     <LinearLayout
         android:id="@+id/bottomControlContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="@drawable/bg_player_gradient_bottom"
+        android:background="#CC000000"
         android:orientation="vertical"
         android:paddingStart="32dp"
-        android:paddingTop="52dp"
+        android:paddingTop="20dp"
         android:paddingEnd="32dp"
-        android:paddingBottom="32dp"
+        android:paddingBottom="28dp"
         android:visibility="gone">
 
+        <!-- Progress row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -98,6 +107,7 @@
                 android:textSize="13sp" />
         </LinearLayout>
 
+        <!-- Controls row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -151,49 +161,55 @@
                 android:textColor="@color/age_text_muted"
                 android:textSize="12sp" />
         </LinearLayout>
-    </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/episodeDrawer"
-        android:layout_width="360dp"
-        android:layout_height="match_parent"
-        android:layout_gravity="end"
-        android:background="@drawable/bg_panel"
-        android:elevation="10dp"
-        android:orientation="vertical"
-        android:padding="18dp"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="播放源"
-            android:textColor="@color/age_text"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/sourceRecycler"
+        <!-- Episode section: shown when user presses DOWN from controls -->
+        <LinearLayout
+            android:id="@+id/episodeSection"
             android:layout_width="match_parent"
-            android:layout_height="110dp"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal" />
-
-        <TextView
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:text="分集"
-            android:textColor="@color/age_text"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+            android:orientation="vertical"
+            android:visibility="gone">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/episodeRecycler"
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="选集"
+                android:textColor="@color/age_focus"
+                android:textSize="11sp" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/episodeRecycler"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:orientation="horizontal" />
+        </LinearLayout>
+
+        <!-- Source section: shown together with episodeSection -->
+        <LinearLayout
+            android:id="@+id/sourceSection"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="12dp"
-            android:layout_weight="1" />
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="切换源"
+                android:textColor="@color/age_focus"
+                android:textSize="11sp" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/sourceRecycler"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:orientation="horizontal" />
+        </LinearLayout>
+
     </LinearLayout>
 
     <TextView

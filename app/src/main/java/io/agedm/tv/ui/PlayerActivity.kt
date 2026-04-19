@@ -110,8 +110,11 @@ class PlayerActivity : AppCompatActivity() {
     private var skipOsdJob: Job? = null
     private var controlsHideJob: Job? = null
     private var controlsVisible = false
-    private var drawerVisible = false
+    private var episodePanelOpen = false
     private var autoHideAfterReady = true
+    // Track last two key-down codes for the skip-intro gesture (RIGHT → UP).
+    private var prevKeyCode = KeyEvent.KEYCODE_UNKNOWN
+    private var prev2KeyCode = KeyEvent.KEYCODE_UNKNOWN
     private var hasPlaybackStarted = false
     private var parserRequestId = 0
     private var parserRequest: ParserRequest? = null
@@ -172,9 +175,20 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
-            if (controlsVisible && !drawerVisible && event.keyCode != KeyEvent.KEYCODE_BACK) {
+            // Reschedule auto-hide on any interaction while overlay is open (but no episodes).
+            if (controlsVisible && !episodePanelOpen && event.keyCode != KeyEvent.KEYCODE_BACK) {
                 scheduleControlsHide()
             }
+
+            // Detect skip-intro gesture: exactly one RIGHT immediately before UP.
+            // Multiple consecutive RIGHTs before UP should NOT trigger it.
+            val skipIntroGesture = event.keyCode == KeyEvent.KEYCODE_DPAD_UP
+                && prevKeyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                && prev2KeyCode != KeyEvent.KEYCODE_DPAD_RIGHT
+
+            prev2KeyCode = prevKeyCode
+            prevKeyCode = event.keyCode
+
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> {
                     handleBackPress()
@@ -190,14 +204,20 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_NUMPAD_ENTER,
                 -> {
-                    if (!controlsVisible && !drawerVisible) {
-                        togglePlayPause()
+                    if (!controlsVisible) {
+                        // Overlay hidden: pause + show controls (episodes stay hidden).
+                        if (player.isPlaying) {
+                            player.pause()
+                            updatePlayPauseButton()
+                        }
+                        showControls(expandEpisodes = false)
                         return true
                     }
+                    // Overlay visible: fall through so focused button handles it.
                 }
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (!controlsVisible && !drawerVisible) {
+                    if (skipIntroGesture && !controlsVisible) {
                         val skipMs = app.playbackStore.getSkipIntroDurationMs()
                         seekBy(skipMs)
                         val sec = skipMs / 1000
@@ -207,24 +227,43 @@ class PlayerActivity : AppCompatActivity() {
                         showSkipOsd("跳过片头  +$label")
                         return true
                     }
-                }
-
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (!drawerVisible && !isDrawerListFocused()) {
-                        openDrawer()
+                    // UP from episode list → collapse episode section back to controls-only.
+                    if (episodePanelOpen && isInEpisodeList()) {
+                        closeEpisodeSection()
                         return true
                     }
                 }
 
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    when {
+                        !controlsVisible -> {
+                            // No overlay at all → show overlay and expand episodes immediately.
+                            showControls(expandEpisodes = true)
+                            return true
+                        }
+                        !episodePanelOpen -> {
+                            // Overlay visible but episodes hidden → expand episodes.
+                            openEpisodeSection()
+                            return true
+                        }
+                        !isInEpisodeOrSourceList() -> {
+                            // Episodes open but focus is still on controls → route to episode row.
+                            focusEpisodeList()
+                            return true
+                        }
+                        // Already in episode/source list: let natural focus navigate.
+                    }
+                }
+
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (!controlsVisible && !drawerVisible) {
+                    if (!controlsVisible && !episodePanelOpen) {
                         seekBy(-10_000L)
                         return true
                     }
                 }
 
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (!controlsVisible && !drawerVisible) {
+                    if (!controlsVisible && !episodePanelOpen) {
                         seekBy(10_000L)
                         return true
                     }
@@ -297,7 +336,7 @@ class PlayerActivity : AppCompatActivity() {
                             binding.loadingText.isVisible = false
                             updatePlayPauseButton()
                             updateProgressUi()
-                            if (autoHideAfterReady && !drawerVisible) {
+                            if (autoHideAfterReady && !episodePanelOpen) {
                                 autoHideAfterReady = false
                                 hideControls()
                             }
@@ -409,7 +448,8 @@ class PlayerActivity : AppCompatActivity() {
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
         binding.sourceRecycler.adapter = sourceAdapter
 
-        binding.episodeRecycler.layoutManager = LinearLayoutManager(this)
+        binding.episodeRecycler.layoutManager =
+            LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
         binding.episodeRecycler.adapter = episodeAdapter
     }
 
@@ -431,7 +471,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun handleBackPress() {
         when {
-            drawerVisible -> closeDrawer()
+            episodePanelOpen -> closeEpisodeSection()
             controlsVisible -> hideControls()
             else -> {
                 persistCurrentProgress()
@@ -1172,8 +1212,10 @@ class PlayerActivity : AppCompatActivity() {
     private fun togglePlayPause() {
         if (player.isPlaying) {
             player.pause()
+            controlsHideJob?.cancel()  // Stay visible while paused.
         } else {
             player.play()
+            hideControls()             // Resume: dismiss the overlay.
         }
         updatePlayPauseButton()
     }
@@ -1369,88 +1411,67 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun openDrawer() {
-        drawerVisible = true
-        controlsVisible = true
-        controlsHideJob?.cancel()
-
-        binding.overlayScrim.alpha = 1f
-        binding.overlayScrim.isVisible = true
-        binding.topInfoContainer.alpha = 1f
-        binding.topInfoContainer.isVisible = true
-        binding.bottomControlContainer.isVisible = false
-
-        val drawerOffsetPx = 360f * resources.displayMetrics.density
-        binding.episodeDrawer.animate().cancel()
-        binding.episodeDrawer.translationX = drawerOffsetPx
-        binding.episodeDrawer.isVisible = true
-        binding.episodeDrawer.animate()
-            .translationX(0f)
-            .setDuration(220L)
-            .setInterpolator(DecelerateInterpolator(2f))
-            .start()
-
-        drawerPreviewSourceIndex = currentSourceIndex
-        drawerPreviewEpisodeIndex = currentEpisodeIndex
-        renderDrawerEpisodePreview(animate = false, direction = 1)
-        scrollEpisodeIntoView()
-        binding.episodeRecycler.post {
-            binding.episodeRecycler.findViewHolderForAdapterPosition(currentEpisodeIndex)
-                ?.itemView
-                ?.requestFocus()
-                ?: binding.episodeRecycler.requestFocus()
-        }
-    }
-
-    private fun closeDrawer() {
-        drawerVisible = false
-        val drawerOffsetPx = 360f * resources.displayMetrics.density
-        binding.episodeDrawer.animate().cancel()
-        binding.episodeDrawer.animate()
-            .translationX(drawerOffsetPx)
-            .setDuration(180L)
-            .setInterpolator(AccelerateInterpolator())
-            .withEndAction {
-                binding.episodeDrawer.isVisible = false
-                binding.episodeDrawer.translationX = 0f
-            }
-            .start()
-
-        binding.overlayScrim.isVisible = controlsVisible
-        binding.bottomControlContainer.isVisible = controlsVisible
-        if (controlsVisible) {
-            binding.playPauseButton.requestFocus()
-            scheduleControlsHide()
-        } else {
-            binding.playerRoot.requestFocus()
-        }
-    }
-
-    private fun showControls() {
+    private fun showControls(expandEpisodes: Boolean = false) {
         controlsVisible = true
         fadeIn(binding.overlayScrim)
         fadeIn(binding.topInfoContainer)
         fadeIn(binding.bottomControlContainer)
-        binding.playPauseButton.requestFocus()
-        scheduleControlsHide()
+        if (expandEpisodes) {
+            openEpisodeSection()
+        } else {
+            binding.playPauseButton.requestFocus()
+            scheduleControlsHide()
+        }
     }
 
     private fun hideControls() {
         controlsHideJob?.cancel()
         controlsVisible = false
+        episodePanelOpen = false
+        binding.episodeSection.isVisible = false
+        binding.sourceSection.isVisible = false
         fadeOut(binding.topInfoContainer)
         fadeOut(binding.bottomControlContainer)
-        if (!drawerVisible) {
-            fadeOut(binding.overlayScrim)
-        }
+        fadeOut(binding.overlayScrim)
         binding.playerRoot.requestFocus()
+    }
+
+    private fun openEpisodeSection() {
+        episodePanelOpen = true
+        controlsHideJob?.cancel()  // Auto-hide is suspended while episodes are open.
+        binding.episodeSection.isVisible = true
+        binding.sourceSection.isVisible = true
+        drawerPreviewSourceIndex = currentSourceIndex
+        drawerPreviewEpisodeIndex = currentEpisodeIndex
+        renderDrawerEpisodePreview(animate = false, direction = 1)
+        scrollEpisodeIntoView()
+        focusEpisodeList()
+    }
+
+    private fun closeEpisodeSection() {
+        episodePanelOpen = false
+        binding.episodeSection.isVisible = false
+        binding.sourceSection.isVisible = false
+        binding.playPauseButton.requestFocus()
+        scheduleControlsHide()
+    }
+
+    private fun focusEpisodeList() {
+        binding.episodeRecycler.post {
+            val target = binding.episodeRecycler
+                .findViewHolderForAdapterPosition(drawerPreviewEpisodeIndex.coerceAtLeast(0))
+                ?.itemView
+                ?: binding.episodeRecycler.getChildAt(0)
+            target?.requestFocus() ?: binding.episodeRecycler.requestFocus()
+        }
     }
 
     private fun scheduleControlsHide() {
         controlsHideJob?.cancel()
+        if (!player.isPlaying || episodePanelOpen) return  // Stay visible while paused or episodes open.
         controlsHideJob = lifecycleScope.launch {
             delay(CONTROLS_AUTO_HIDE_MS)
-            if (controlsVisible && !drawerVisible) {
+            if (controlsVisible && !episodePanelOpen) {
                 hideControls()
             }
         }
@@ -1480,10 +1501,15 @@ class PlayerActivity : AppCompatActivity() {
             .start()
     }
 
-    private fun isDrawerListFocused(): Boolean {
+    private fun isInEpisodeOrSourceList(): Boolean {
         val focused = currentFocus ?: return false
-        return focused.parent == binding.episodeRecycler ||
-            focused.parent == binding.sourceRecycler
+        return focused.parent === binding.episodeRecycler ||
+            focused.parent === binding.sourceRecycler
+    }
+
+    private fun isInEpisodeList(): Boolean {
+        val focused = currentFocus ?: return false
+        return focused.parent === binding.episodeRecycler
     }
 
     private fun startProgressLoop() {
