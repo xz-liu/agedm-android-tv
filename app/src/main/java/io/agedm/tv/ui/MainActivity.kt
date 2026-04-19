@@ -140,6 +140,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) return
+        // When a dialog or another activity closes, Android restores focus to the activity
+        // window. If the previously-focused view no longer exists (e.g. because the content
+        // was reloaded while the dialog was open), focus can land on the wrong nav button
+        // and trigger focusNavJob to switch screens. Cancel the job and correct focus here.
+        focusNavJob?.cancel()
+        binding.root.post {
+            val focused = currentFocus ?: return@post
+            if (isInNavArea(focused) && focused.id != currentNavButton().id) {
+                binding.contentRecycler.getChildAt(0)?.requestFocus()
+                    ?: currentNavButton().requestFocus()
+            }
+        }
+    }
+
     private fun setupRecycler() {
         sectionAdapter = BrowseSectionAdapter(::openDetail)
         gridAdapter = PosterCardAdapter(::openDetail)
