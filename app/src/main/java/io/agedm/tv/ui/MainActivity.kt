@@ -341,8 +341,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyCastBitmap(requestId: Long, bitmap: Bitmap) {
         if (!shouldHandleLoadResult(requestId)) return
-        binding.pageTitle.text = "手机投送"
-        binding.pageSubtitle.text = "扫码搜索动画，一键发送到电视"
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = false
         binding.castContent.isVisible = true
@@ -359,8 +357,6 @@ class MainActivity : AppCompatActivity() {
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
         currentTotal = 0
-        binding.pageTitle.text = getString(R.string.app_name)
-        binding.pageSubtitle.text = "推荐、更新与每日追番"
         launchStaleFirstLoad(
             loadingMessage = "正在整理首页...",
             errorPrefix = "首页加载失败",
@@ -379,8 +375,6 @@ class MainActivity : AppCompatActivity() {
         }
         updatePagination(visible = false)
         val query = catalogQuery
-        binding.pageTitle.text = "目录"
-        binding.pageSubtitle.text = "按 AGE 分类快速找番"
         launchStaleFirstLoad(
             loadingMessage = "正在加载目录...",
             errorPrefix = "目录加载失败",
@@ -397,8 +391,6 @@ class MainActivity : AppCompatActivity() {
     private fun loadRecommend() {
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        binding.pageTitle.text = "推荐"
-        binding.pageSubtitle.text = "AGE 站内精选片单"
         launchStaleFirstLoad(
             loadingMessage = "正在加载推荐...",
             errorPrefix = "推荐加载失败",
@@ -414,8 +406,6 @@ class MainActivity : AppCompatActivity() {
     private fun loadUpdate(page: Int) {
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        binding.pageTitle.text = "更新"
-        binding.pageSubtitle.text = "最近更新的动画作品"
         launchStaleFirstLoad(
             loadingMessage = "正在加载更新...",
             errorPrefix = "更新加载失败",
@@ -433,12 +423,6 @@ class MainActivity : AppCompatActivity() {
         applyFilterActions(rankFilterActions(), showReset = false)
         updatePagination(visible = false)
         val year = rankYear
-        binding.pageTitle.text = "排行"
-        binding.pageSubtitle.text = if (year == "all") {
-            "站内热门 Top 榜单"
-        } else {
-            "$year 年度热门榜单"
-        }
         launchStaleFirstLoad(
             loadingMessage = "正在加载排行...",
             errorPrefix = "排行加载失败",
@@ -457,8 +441,6 @@ class MainActivity : AppCompatActivity() {
         val history = app.playbackStore.getRecentRecords(60).map(::recordToCard)
         currentTotal = history.size
         currentPageSize = history.size.coerceAtLeast(1)
-        binding.pageTitle.text = "记录"
-        binding.pageSubtitle.text = "最近观看与续播历史"
         showGrid(history, emptyMessage = "还没有播放记录")
     }
 
@@ -470,8 +452,6 @@ class MainActivity : AppCompatActivity() {
         }
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        binding.pageTitle.text = "搜索"
-        binding.pageSubtitle.text = "「$query」相关结果"
         launchStaleFirstLoad(
             loadingMessage = "正在搜索「$query」...",
             errorPrefix = "搜索失败",
@@ -558,7 +538,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun prepareBrowseContent() {
-        binding.pageHeader.isVisible = true
         binding.castContent.isVisible = false
         binding.castErrorText.isVisible = false
         binding.castQrImage.setImageDrawable(null)
