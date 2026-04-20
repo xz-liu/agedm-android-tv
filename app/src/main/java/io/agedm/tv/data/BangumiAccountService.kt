@@ -184,10 +184,7 @@ class BangumiAccountService(
     private suspend fun validateStoredSession() {
         val session = _account.value ?: return
         runCatching {
-            executeAuthenticatedTextRequest(
-                url = "https://bgm.tv/settings",
-                cookies = session.cookies,
-            )
+            refreshStoredAccount(session)
         }.onSuccess {
             syncExistingPlaybackRecords()
         }
@@ -294,16 +291,17 @@ class BangumiAccountService(
 
     suspend fun fetchMyPage(): BangumiMyPageData? {
         val session = _account.value ?: return null
+        val refreshedSession = refreshStoredAccount(session)
         val sections = buildList {
-            add(fetchCollectionSection(session, BangumiCollectionStatus.DO, "在看", 12))
-            add(fetchCollectionSection(session, BangumiCollectionStatus.WISH, "想看", 12))
-            add(fetchCollectionSection(session, BangumiCollectionStatus.COLLECT, "看过", 12))
-            add(fetchCollectionSection(session, BangumiCollectionStatus.ON_HOLD, "搁置", 12))
-            add(fetchCollectionSection(session, BangumiCollectionStatus.DROPPED, "抛弃", 12))
+            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.DO, "在看", 12))
+            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.WISH, "想看", 12))
+            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.COLLECT, "看过", 12))
+            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.ON_HOLD, "搁置", 12))
+            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.DROPPED, "抛弃", 12))
         }.filter { it.items.isNotEmpty() }
         return BangumiMyPageData(
-            username = session.username,
-            displayName = session.displayName.ifBlank { session.username },
+            username = refreshedSession.username,
+            displayName = refreshedSession.displayName.ifBlank { refreshedSession.username },
             sections = sections,
         )
     }
@@ -457,16 +455,28 @@ class BangumiAccountService(
         return metadata.subjectId.takeIf { it > 0 }
     }
 
+    private suspend fun refreshStoredAccount(session: BangumiAccountSession): BangumiAccountSession {
+        val response = executeAuthenticatedTextRequest(
+            url = SETTINGS_URL,
+            cookies = session.cookies,
+        )
+        val mergedCookies = session.cookies.toMutableMap().apply { putAll(response.cookies) }
+        val refreshed = parseAccount(response.body, mergedCookies)?.copy(
+            lastValidatedMs = System.currentTimeMillis(),
+        ) ?: session.copy(
+            cookies = mergedCookies,
+            lastValidatedMs = System.currentTimeMillis(),
+        )
+        store.saveSession(refreshed)
+        _account.value = refreshed
+        return refreshed
+    }
+
     private fun parseAccount(body: String, cookies: Map<String, String>): BangumiAccountSession? {
         val document = Jsoup.parse(body)
-        val profileLink = document.selectFirst("#dock a[href^=/user/], #headerNeue2 a[href^=/user/]")
-            ?: return null
-        val username = profileLink.attr("href").substringAfterLast('/').trim()
-        if (username.isBlank()) return null
-        val displayName = profileLink.text().trim().ifBlank { username }
-        val avatarUrl = document.selectFirst("#dock a.avatar img, #badgeUserPanel a.avatar img")
-            ?.attr("src")
-            .orEmpty()
+        val username = extractAuthenticatedUsername(body) ?: return null
+        val displayName = extractDisplayName(document, username)
+        val avatarUrl = extractAvatarUrl(document, username)
         return BangumiAccountSession(
             username = username,
             displayName = displayName,
@@ -482,6 +492,59 @@ class BangumiAccountService(
             ?.text()
             ?.trim()
             ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun extractAuthenticatedUsername(body: String): String? {
+        val uid = Regex("""CHOBITS_UID\s*=\s*(\d+)""")
+            .find(body)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
+            ?: return null
+        if (uid <= 0L) return null
+        return Regex("""CHOBITS_USERNAME\s*=\s*'([^']*)'""")
+            .find(body)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun extractDisplayName(document: org.jsoup.nodes.Document, username: String): String {
+        document.selectFirst("input[name=nickname]")?.attr("value")?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        document.selectFirst("#dock a[href*=/user/$username] span.ico_home")
+            ?.text()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        document.selectFirst("h1 a[href*=/user/$username]")
+            ?.text()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        document.selectFirst("h1")?.text()?.trim()
+            ?.takeIf { it.endsWith("的个人设置") }
+            ?.removeSuffix("的个人设置")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        return username
+    }
+
+    private fun extractAvatarUrl(document: org.jsoup.nodes.Document, username: String): String {
+        document.selectFirst("a.avatar[href*=/$username] img")?.attr("src")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        val style = document.selectFirst("a.avatar[href*=/$username] span[style*=background-image]")
+            ?.attr("style")
+            .orEmpty()
+        return Regex("""background-image:\s*url\(['"]?([^'")]+)""")
+            .find(style)
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
     }
 
     private fun requireSessionCookies(): Map<String, String> {
@@ -709,6 +772,7 @@ class BangumiAccountService(
     companion object {
         private const val BASE_URL = "https://bgm.tv/"
         private const val LOGIN_URL = "${BASE_URL}login"
+        private const val SETTINGS_URL = "${BASE_URL}settings"
         private const val CAPTCHA_URL = "${BASE_URL}signup/captcha"
         private const val FOLLOW_THE_RABBIT_URL = "${BASE_URL}FollowTheRabbit"
         private const val LOGIN_CHALLENGE_TTL_MS = 10 * 60_000L
