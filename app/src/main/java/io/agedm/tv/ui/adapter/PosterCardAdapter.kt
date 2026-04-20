@@ -108,7 +108,8 @@ class PosterCardAdapter(
             val cachedScore = item.bgmScore.ifBlank { scoreCache[item.animeId].orEmpty() }
             if (cachedScore.isNotBlank()) {
                 scoreCache[item.animeId] = cachedScore
-                binding.scoreText.text = cachedScore
+                val hasSubtitle = !binding.subtitleText.text.isNullOrBlank()
+                binding.scoreText.text = if (hasSubtitle) "$cachedScore · " else cachedScore
                 binding.scoreText.visibility = View.VISIBLE
                 return
             }

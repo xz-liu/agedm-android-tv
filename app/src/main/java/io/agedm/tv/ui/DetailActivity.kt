@@ -779,7 +779,14 @@ class DetailActivity : AppCompatActivity() {
                 metadata.rank?.let { add("#${it}") }
             }
             binding.bangumiScoreVotes.text = voteParts.joinToString(" · ")
+            binding.bangumiScoreBar.progress = ((score / 10.0) * 100).toInt()
+        }
+
+        if (metadata.ratingCounts.isNotEmpty()) {
             buildScoreDistBars(binding.bangumiScoreDistLayout, metadata.ratingCounts)
+            binding.bangumiScoreDistLayout.isVisible = true
+        } else {
+            binding.bangumiScoreDistLayout.isVisible = false
         }
 
         val topTags = metadata.tags.sortedByDescending { it.count }.take(12).map { it.name }
@@ -860,7 +867,7 @@ class DetailActivity : AppCompatActivity() {
         val accentColor = getColor(io.agedm.tv.R.color.age_focus)
         val trackColor = 0x1A355A77
         val textMuted = getColor(io.agedm.tv.R.color.age_text_muted)
-        val barHeight = dp(3)
+        val barHeight = dp(6)
 
         (10 downTo 1).forEach { score ->
             val count = ratingCounts[score] ?: 0
@@ -885,10 +892,19 @@ class DetailActivity : AppCompatActivity() {
                 val trackView = View(this).apply { setBackgroundColor(trackColor) }
                 barLayout.addView(trackView, LinearLayout.LayoutParams(0, barHeight, remaining))
             }
+            val countLabel = TextView(this).apply {
+                text = count.toString()
+                setTextColor(textMuted)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                minWidth = dp(28)
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            }
             row.addView(label)
             row.addView(barLayout, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = dp(4)
+                marginEnd = dp(4)
             })
+            row.addView(countLabel)
             container.addView(row, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
