@@ -63,7 +63,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.bangumiLoginHintText.text = if (bangumiAccount == null) {
             "扫码后在手机上输入用户名、密码和验证码。"
         } else {
-            "当前账号：${bangumiAccount.username}。可重新扫码切换，或直接退出。"
+            "当前账号：${bangumiAccount.username}。登录失效会自动清理，可重新扫码切换，或直接退出。"
         }
         lifecycleScope.launch {
             val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }

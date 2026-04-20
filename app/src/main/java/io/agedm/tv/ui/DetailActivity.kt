@@ -71,6 +71,7 @@ class DetailActivity : AppCompatActivity() {
         setupButtons()
         setupBackBehavior()
         collectIncomingRoutes()
+        collectBangumiMetadataUpdates()
         loadDetail()
     }
 
@@ -172,6 +173,18 @@ class DetailActivity : AppCompatActivity() {
         }
     }
 
+    private fun collectBangumiMetadataUpdates() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                app.ageRepository.bangumiMetadataUpdates.collectLatest { (animeId, metadata) ->
+                    val currentDetail = detail?.takeIf { it.animeId == animeId } ?: return@collectLatest
+                    detail = currentDetail.copy(bangumi = metadata)
+                    bindBangumiPanel(metadata)
+                }
+            }
+        }
+    }
+
     private fun loadDetail() {
         val animeId = intent.getLongExtra(EXTRA_ANIME_ID, 0L)
         if (animeId <= 0L) {
@@ -228,6 +241,10 @@ class DetailActivity : AppCompatActivity() {
         binding.introText.text = htmlToPlainText(loadedDetail.introHtml).ifBlank { "暂无简介" }
         binding.coverImage.loadPosterImage(loadedDetail.cover)
         bindBangumiPanel(loadedDetail.bangumi)
+        app.ageRepository.prefetchBangumiMetadata(
+            animeId = loadedDetail.animeId,
+            title = loadedDetail.title,
+        )
         bangumiCollectionStatus = app.bangumiAccountService.cachedCollectionStatus(loadedDetail.animeId)
         bangumiCollectionLoading = false
         renderBangumiCollectionState()
@@ -500,6 +517,11 @@ class DetailActivity : AppCompatActivity() {
                     requestFocus = false,
                     preferredSourceKey = preferredSourceKey,
                     preferredEpisodeIndex = preferredEpisodeIndex,
+                )
+                app.ageRepository.prefetchBangumiMetadata(
+                    animeId = refreshedDetail.animeId,
+                    title = refreshedDetail.title,
+                    forceRefresh = true,
                 )
                 binding.refreshSourcesButton.requestFocus()
                 Toast.makeText(this@DetailActivity, "已刷新播放源", Toast.LENGTH_SHORT).show()
@@ -828,6 +850,7 @@ class DetailActivity : AppCompatActivity() {
             cover = item.cover,
             badge = item.updateLabel,
             subtitle = "相关作品",
+            bgmScore = app.ageRepository.peekBangumiScore(item.animeId).orEmpty(),
         )
     }
 

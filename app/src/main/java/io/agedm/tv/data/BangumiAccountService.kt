@@ -18,7 +18,6 @@ import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 
 class BangumiAccountService(
     private val repository: AgeRepository,
@@ -41,7 +40,9 @@ class BangumiAccountService(
             }
         }
         if (isLoggedIn()) {
-            syncExistingPlaybackRecords()
+            scope.launch {
+                validateStoredSession()
+            }
         }
     }
 
@@ -90,7 +91,7 @@ class BangumiAccountService(
         password: String,
         captcha: String,
     ): BangumiLoginResult {
-        val challenge = loginChallenges.remove(sessionId) ?: return BangumiLoginResult(
+        val challenge = loginChallenges[sessionId] ?: return BangumiLoginResult(
             success = false,
             message = "登录会话已过期，请重新扫码",
         )
@@ -112,18 +113,30 @@ class BangumiAccountService(
             formFields = fields,
         )
         val cookies = challenge.cookies.toMutableMap().apply { putAll(loginResponse.cookies) }
-        val homepage = executeTextRequest(
-            url = "https://bgm.tv/",
-            cookies = cookies,
-        )
-        cookies.putAll(homepage.cookies)
-        val account = parseAccount(homepage.body, cookies)
+        val directAccount = parseAccount(loginResponse.body, cookies)
+        val homepage = if (directAccount == null) {
+            executeTextRequest(
+                url = "https://bgm.tv/",
+                cookies = cookies,
+            )
+        } else {
+            null
+        }
+        homepage?.cookies?.let(cookies::putAll)
+        val account = directAccount ?: homepage?.let { parseAccount(it.body, cookies) }
         return if (account != null) {
+            loginChallenges.remove(sessionId)
             store.saveSession(account)
             _account.value = account
             syncExistingPlaybackRecords()
             BangumiLoginResult(true, "Bangumi 登录成功", account)
         } else {
+            loginChallenges[sessionId] = refreshChallenge(
+                sessionId = sessionId,
+                fallback = challenge,
+                cookies = cookies,
+                loginPageHtml = loginResponse.body,
+            )
             BangumiLoginResult(false, "登录失败，请检查用户名、密码和验证码")
         }
     }
@@ -131,6 +144,37 @@ class BangumiAccountService(
     fun logout() {
         store.clearSession()
         _account.value = null
+    }
+
+    private suspend fun validateStoredSession() {
+        val session = _account.value ?: return
+        runCatching {
+            executeAuthenticatedTextRequest(
+                url = "https://bgm.tv/settings",
+                cookies = session.cookies,
+            )
+        }.onSuccess {
+            syncExistingPlaybackRecords()
+        }
+    }
+
+    private fun clearInvalidSession() {
+        store.clearSession()
+        _account.value = null
+    }
+
+    private fun updatePersistedSession(
+        extraCookies: Map<String, String> = emptyMap(),
+        validatedAtMs: Long = System.currentTimeMillis(),
+    ) {
+        val current = _account.value ?: return
+        val mergedCookies = current.cookies.toMutableMap().apply { putAll(extraCookies) }
+        val updated = current.copy(
+            cookies = mergedCookies,
+            lastValidatedMs = validatedAtMs,
+        )
+        store.saveSession(updated)
+        _account.value = updated
     }
 
     fun enqueueManualStatusUpdate(animeId: Long, title: String, status: BangumiCollectionStatus) {
@@ -235,9 +279,9 @@ class BangumiAccountService(
         title: String,
         limit: Int,
     ): BrowseSection {
-        val response = executeTextRequest(
+        val response = executeAuthenticatedTextRequest(
             url = "https://bgm.tv/anime/list/${session.username}/${status.wireName}",
-            cookies = session.cookies,
+            cookies = requireSessionCookies(),
         )
         val document = Jsoup.parse(response.body)
         val cards = document.select("#browserItemList li.item").mapNotNull { item ->
@@ -265,6 +309,7 @@ class BangumiAccountService(
                 cover = cover,
                 badge = status.label,
                 subtitle = subtitle,
+                bgmScore = repository.peekBangumiScore(alignedAnimeId).orEmpty(),
             )
         }.take(limit)
         return BrowseSection(
@@ -314,7 +359,7 @@ class BangumiAccountService(
         fields["interest"] = status.interestValue
         fields["referer"] = "ajax"
         fields["update"] = "保存"
-        executeTextRequest(
+        executeAuthenticatedTextRequest(
             url = form.actionUrl,
             cookies = requireSessionCookies(),
             formFields = fields,
@@ -331,7 +376,7 @@ class BangumiAccountService(
     }
 
     private suspend fun fetchCollectionForm(subjectId: Long): CollectionForm {
-        val response = executeTextRequest(
+        val response = executeAuthenticatedTextRequest(
             url = "https://bgm.tv/update/$subjectId?keepThis=false&TB_iframe=true&height=360&width=500",
             cookies = requireSessionCookies(),
         )
@@ -406,6 +451,48 @@ class BangumiAccountService(
         loginChallenges.entries.removeIf { it.value.createdAtMs < threshold }
     }
 
+    private fun refreshChallenge(
+        sessionId: String,
+        fallback: LoginChallenge,
+        cookies: Map<String, String>,
+        loginPageHtml: String,
+    ): LoginChallenge {
+        val fields = parseLoginHiddenFields(loginPageHtml).takeIf { it.isNotEmpty() } ?: fallback.hiddenFields
+        return LoginChallenge(
+            sessionId = sessionId,
+            cookies = cookies.toMutableMap(),
+            hiddenFields = fields,
+            createdAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun parseLoginHiddenFields(body: String): Map<String, String> {
+        val form = Jsoup.parse(body).selectFirst("form[action*=FollowTheRabbit]") ?: return emptyMap()
+        return buildMap {
+            form.select("input[name]").forEach { input ->
+                put(input.attr("name"), input.attr("value"))
+            }
+        }
+    }
+
+    private fun executeAuthenticatedTextRequest(
+        url: String,
+        cookies: Map<String, String>,
+        formFields: Map<String, String>? = null,
+    ): TextResponse {
+        val response = executeTextRequest(
+            url = url,
+            cookies = cookies,
+            formFields = formFields,
+        )
+        if (looksLikeExpiredSession(response)) {
+            clearInvalidSession()
+            throw BangumiSessionExpiredException()
+        }
+        updatePersistedSession(extraCookies = response.cookies)
+        return response
+    }
+
     private fun executeTextRequest(
         url: String,
         cookies: Map<String, String> = emptyMap(),
@@ -432,6 +519,7 @@ class BangumiAccountService(
             return TextResponse(
                 body = body,
                 cookies = parseSetCookies(response.headers),
+                finalUrl = response.request.url.toString(),
             )
         }
     }
@@ -458,6 +546,19 @@ class BangumiAccountService(
                 cookies = parseSetCookies(response.headers),
             )
         }
+    }
+
+    private fun looksLikeExpiredSession(response: TextResponse): Boolean {
+        if (response.finalUrl.contains("/login")) return true
+        val body = response.body
+        if (body.contains("self.parent.tb_remove()") && body.contains("window.parent.location.href='/'")) {
+            return true
+        }
+        val document = Jsoup.parse(body)
+        val guestHeader = document.selectFirst(".idBadgerNeue .guest a[href*=login]") != null
+        val loginRequiredNotice = document.selectFirst("#colunmNotice .message .text a[href=/login]") != null ||
+            body.contains("当前操作需要您") && body.contains("/login")
+        return guestHeader && loginRequiredNotice
     }
 
     private fun parseSetCookies(headers: Headers): Map<String, String> {
@@ -495,6 +596,7 @@ class BangumiAccountService(
     private data class TextResponse(
         val body: String,
         val cookies: Map<String, String>,
+        val finalUrl: String,
     )
 
     data class BinaryResponse(
@@ -520,6 +622,8 @@ class BangumiAccountService(
         val status: BangumiCollectionStatus,
         val mode: WriteMode,
     )
+
+    private class BangumiSessionExpiredException : IOException("Bangumi 登录状态已失效，请重新扫码")
 
     companion object {
         private const val LOGIN_CHALLENGE_TTL_MS = 10 * 60_000L

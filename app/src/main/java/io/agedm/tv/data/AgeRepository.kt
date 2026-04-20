@@ -2,10 +2,22 @@ package io.agedm.tv.data
 
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -22,6 +34,10 @@ class AgeRepository(
         explicitNulls = false
     },
 ) {
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val bangumiPrefetchJobs = ConcurrentHashMap<Long, Job>()
+    private val bangumiScoreRequests = ConcurrentHashMap<Long, Deferred<String?>>()
+    private val persistentStore by lazy { persistentDir?.let(::PersistentJsonStore) }
     private val supplementalSourceService by lazy {
         SupplementalSourceService(
             cache = cache,
@@ -30,15 +46,17 @@ class AgeRepository(
         )
     }
     private val bangumiService by lazy {
-        persistentDir?.let { dir ->
+        persistentStore?.let { store ->
             BangumiService(
-                store = PersistentJsonStore(dir),
+                store = store,
                 client = client,
                 json = json,
                 alignToAge = ::alignBangumiSubjectToAge,
             )
         }
     }
+    private val _bangumiMetadataUpdates = MutableSharedFlow<Pair<Long, BangumiMetadata?>>(extraBufferCapacity = 8)
+    val bangumiMetadataUpdates = _bangumiMetadataUpdates.asSharedFlow()
 
     suspend fun fetchDetail(animeId: Long, forceRefresh: Boolean = false): AnimeDetail = withContext(Dispatchers.IO) {
         val body = cachedGet(
@@ -51,13 +69,7 @@ class AgeRepository(
         val desktopRecommendations = runCatching {
             fetchDesktopRecommendations(animeId, forceRefresh)
         }.getOrElse { emptyList() }
-        val bangumi = runCatching {
-            bangumiService?.fetch(
-                animeId = animeId,
-                title = response.video.name,
-                forceRefresh = forceRefresh,
-            )
-        }.getOrNull()
+        val bangumi = bangumiService?.peek(animeId)
         val detail = response.toAnimeDetail(
             desktopRecommendations = desktopRecommendations,
             bangumi = bangumi,
@@ -171,12 +183,50 @@ class AgeRepository(
         bangumiService?.fetch(animeId, title, forceRefresh)
     }
 
+    fun prefetchBangumiMetadata(
+        animeId: Long,
+        title: String,
+        forceRefresh: Boolean = false,
+    ) {
+        if (title.isBlank()) return
+        if (forceRefresh) {
+            bangumiPrefetchJobs.remove(animeId)?.cancel()
+        } else {
+            bangumiPrefetchJobs[animeId]?.takeIf { it.isActive }?.let { return }
+        }
+        val job = repositoryScope.launch {
+            val metadata = runCatching {
+                bangumiService?.fetch(animeId, title, forceRefresh)
+            }.getOrNull()
+            _bangumiMetadataUpdates.tryEmit(animeId to metadata)
+            bangumiPrefetchJobs.remove(animeId)
+        }
+        bangumiPrefetchJobs[animeId] = job
+    }
+
     fun peekBangumiScore(animeId: Long): String? {
         return bangumiService?.peek(animeId)?.scoreLabel
     }
 
     suspend fun ensureBangumiScore(animeId: Long, title: String): String? = withContext(Dispatchers.IO) {
-        bangumiService?.fetchScore(animeId, title)
+        bangumiService?.peek(animeId)?.scoreLabel?.takeIf { it.isNotBlank() }?.let { return@withContext it }
+        val service = bangumiService ?: return@withContext null
+        bangumiScoreRequests[animeId]?.let { running ->
+            return@withContext runCatching { running.await() }.getOrNull()
+        }
+        val deferred = repositoryScope.async {
+            try {
+                service.fetchScore(animeId, title)
+            } finally {
+                bangumiScoreRequests.remove(animeId)
+            }
+        }
+        val running = bangumiScoreRequests.putIfAbsent(animeId, deferred)
+        if (running != null) {
+            deferred.cancel()
+            return@withContext runCatching { running.await() }.getOrNull()
+        }
+        runCatching { deferred.await() }.getOrNull()
     }
 
     suspend fun alignBangumiTitlesToAge(
@@ -489,6 +539,12 @@ class AgeRepository(
         val cleanedTitles = titles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (cleanedTitles.isEmpty()) return null
 
+        readBangumiAgeAlignment(cleanedTitles)?.let { cached ->
+            val cachedItem = cached.toItem()
+            if (cachedItem == null) return null
+            if (cachedItem.animeId != excludeAnimeId) return cachedItem
+        }
+
         var bestCard: AnimeCard? = null
         var bestScore = 0
         for (query in cleanedTitles) {
@@ -509,13 +565,56 @@ class AgeRepository(
             }
         }
 
-        val matched = bestCard?.takeIf { bestScore > 0 } ?: return null
-        return AgeRelatedItem(
-            animeId = matched.animeId,
-            title = matched.title,
-            cover = matched.cover,
-            updateLabel = matched.badge,
+        val matched = bestCard?.takeIf { bestScore > 0 }?.let { candidate ->
+            AgeRelatedItem(
+                animeId = candidate.animeId,
+                title = candidate.title,
+                cover = candidate.cover,
+                updateLabel = candidate.badge,
+            )
+        }
+        writeBangumiAgeAlignment(cleanedTitles, matched)
+        return matched?.takeIf { it.animeId != excludeAnimeId }
+    }
+
+    private fun readBangumiAgeAlignment(titles: List<String>): BangumiAgeAlignmentCacheEntry? {
+        val store = persistentStore ?: return null
+        val body = store.read(bangumiAgeAlignmentCacheKey(titles)) ?: return null
+        return runCatching {
+            json.decodeFromString<BangumiAgeAlignmentCacheEntry>(body)
+        }.getOrNull()
+    }
+
+    private fun writeBangumiAgeAlignment(titles: List<String>, item: AgeRelatedItem?) {
+        val store = persistentStore ?: return
+        val payload = if (item == null) {
+            BangumiAgeAlignmentCacheEntry(
+                updatedAtMs = System.currentTimeMillis(),
+                miss = true,
+            )
+        } else {
+            BangumiAgeAlignmentCacheEntry(
+                animeId = item.animeId,
+                title = item.title,
+                cover = item.cover,
+                updateLabel = item.updateLabel,
+                updatedAtMs = System.currentTimeMillis(),
+            )
+        }
+        store.write(
+            bangumiAgeAlignmentCacheKey(titles),
+            json.encodeToString(payload),
         )
+    }
+
+    private fun bangumiAgeAlignmentCacheKey(titles: List<String>): String {
+        val normalized = titles.asSequence()
+            .map(::normalizeBangumiLookupTitle)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+            .joinToString("|")
+        return "bgm_age_align_${normalized.sha256Hex()}"
     }
 
     private fun scoreBangumiAlignment(
@@ -734,5 +833,32 @@ class AgeRepository(
 
         private val streamPattern = Regex("""var\s+Vurl\s*=\s*'([^']+)'""")
         private val detailPathPattern = Regex("""/detail/(\d+)""")
+    }
+
+    @Serializable
+    private data class BangumiAgeAlignmentCacheEntry(
+        val animeId: Long = 0L,
+        val title: String = "",
+        val cover: String = "",
+        val updateLabel: String = "",
+        val updatedAtMs: Long = 0L,
+        val miss: Boolean = false,
+    ) {
+        fun toItem(): AgeRelatedItem? {
+            if (miss || animeId <= 0L) return null
+            return AgeRelatedItem(
+                animeId = animeId,
+                title = title,
+                cover = cover,
+                updateLabel = updateLabel,
+            )
+        }
+    }
+
+    private fun String.sha256Hex(): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(toByteArray())
+        return bytes.joinToString(separator = "") { byte ->
+            byte.toInt().and(0xff).toString(16).padStart(2, '0')
+        }
     }
 }

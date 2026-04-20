@@ -34,7 +34,7 @@ internal class BangumiService(
         return runCatching {
             val resolved = cached?.subjectId?.takeIf { it > 0 }?.let { subjectId ->
                 ResolvedMatch(subjectId = subjectId, matchedTitle = cached.matchedTitle.ifBlank { title })
-            } ?: resolveSubject(title)
+            } ?: resolveSubject(animeId, title)
             if (resolved == null) {
                 cached?.scoreLabel
             } else {
@@ -77,6 +77,7 @@ internal class BangumiService(
                     fetchedAtMs = System.currentTimeMillis(),
                     isComplete = false,
                 )
+                cacheResolvedMatch(animeId, resolved)
                 store.write(cacheKey(animeId), json.encodeToString(fresh))
                 fresh.scoreLabel
             }
@@ -94,7 +95,7 @@ internal class BangumiService(
         return runCatching {
             val resolved = cached?.subjectId?.takeIf { it > 0 }?.let { subjectId ->
                 ResolvedMatch(subjectId = subjectId, matchedTitle = cached.matchedTitle.ifBlank { title })
-            } ?: resolveSubject(title)
+            } ?: resolveSubject(animeId, title)
             if (resolved == null) {
                 cached
             } else {
@@ -103,6 +104,7 @@ internal class BangumiService(
                     subjectId = resolved.subjectId,
                     matchedTitle = resolved.matchedTitle.ifBlank { title },
                 )
+                cacheResolvedMatch(animeId, resolved)
                 store.write(cacheKey(animeId), json.encodeToString(fresh))
                 fresh
             }
@@ -246,7 +248,17 @@ internal class BangumiService(
         return items.values.toList()
     }
 
-    private fun resolveSubject(title: String): ResolvedMatch? {
+    private fun resolveSubject(animeId: Long, title: String): ResolvedMatch? {
+        val cached = readResolvedMatchCache(animeId)
+        if (cached != null && !isResolvedMatchStale(cached)) {
+            return cached.toResolvedMatch()
+        }
+        val resolved = searchSubject(title)
+        cacheResolvedMatch(animeId, resolved)
+        return resolved
+    }
+
+    private fun searchSubject(title: String): ResolvedMatch? {
         val requestBody = json.encodeToString(
             BangumiSearchRequest(
                 keyword = title,
@@ -281,10 +293,37 @@ internal class BangumiService(
         }
     }
 
+    private fun readResolvedMatchCache(animeId: Long): ResolvedMatchCacheEntry? {
+        val body = store.read(matchCacheKey(animeId)) ?: return null
+        return runCatching {
+            json.decodeFromString<ResolvedMatchCacheEntry>(body)
+        }.getOrNull()
+    }
+
+    private fun cacheResolvedMatch(animeId: Long, resolved: ResolvedMatch?) {
+        val payload = if (resolved == null) {
+            ResolvedMatchCacheEntry(
+                updatedAtMs = System.currentTimeMillis(),
+                miss = true,
+            )
+        } else {
+            ResolvedMatchCacheEntry(
+                subjectId = resolved.subjectId,
+                matchedTitle = resolved.matchedTitle,
+                updatedAtMs = System.currentTimeMillis(),
+            )
+        }
+        store.write(matchCacheKey(animeId), json.encodeToString(payload))
+    }
+
     private fun isRatingStale(metadata: BangumiMetadata): Boolean {
         val fetchedAt = metadata.fetchedAtMs
         if (fetchedAt <= 0L) return true
         return System.currentTimeMillis() - fetchedAt > RATING_TTL_MS
+    }
+
+    private fun isResolvedMatchStale(entry: ResolvedMatchCacheEntry): Boolean {
+        return entry.updatedAtMs <= 0L
     }
 
     private fun scoreTitleMatch(
@@ -328,10 +367,28 @@ internal class BangumiService(
 
     private fun cacheKey(animeId: Long): String = "bgm_$animeId"
 
+    private fun matchCacheKey(animeId: Long): String = "bgm_match_$animeId"
+
     private data class ResolvedMatch(
         val subjectId: Long,
         val matchedTitle: String,
     )
+
+    @Serializable
+    private data class ResolvedMatchCacheEntry(
+        val subjectId: Long = 0L,
+        val matchedTitle: String = "",
+        val updatedAtMs: Long = 0L,
+        val miss: Boolean = false,
+    ) {
+        fun toResolvedMatch(): ResolvedMatch? {
+            if (miss || subjectId <= 0L) return null
+            return ResolvedMatch(
+                subjectId = subjectId,
+                matchedTitle = matchedTitle,
+            )
+        }
+    }
 
     @Serializable
     private data class BangumiSearchRequest(

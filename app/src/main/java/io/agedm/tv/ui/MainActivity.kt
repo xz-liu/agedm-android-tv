@@ -1241,6 +1241,7 @@ class MainActivity : AppCompatActivity() {
             cover = app.ageRepository.buildCoverUrl(record.animeId),
             badge = record.episodeLabel,
             subtitle = "看到 ${formatPlaybackTime(record.positionMs)}",
+            bgmScore = app.ageRepository.peekBangumiScore(record.animeId).orEmpty(),
         )
     }
 

@@ -1,12 +1,14 @@
 package io.agedm.tv.ui.adapter
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Color
-import android.view.View
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
-import androidx.recyclerview.widget.RecyclerView
-import androidx.lifecycle.findViewTreeLifecycleOwner
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.RecyclerView
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.databinding.ItemPosterCardBinding
@@ -24,7 +26,7 @@ class PosterCardAdapter(
 
     private var items: List<AnimeCard> = emptyList()
     private val scoreCache = mutableMapOf<Long, String>()
-    private val requestedScoreIds = mutableSetOf<Long>()
+    private val inFlightScoreIds = mutableSetOf<Long>()
 
     fun submitList(cards: List<AnimeCard>) {
         items = cards
@@ -92,20 +94,32 @@ class PosterCardAdapter(
             }
 
             binding.scoreText.visibility = View.GONE
-            val lifecycleOwner = binding.root.findViewTreeLifecycleOwner() ?: return
+            val lifecycleOwner = binding.root.context.findLifecycleOwner() ?: return
             val app = binding.root.context.applicationContext as? AgeTvApplication ?: return
-            if (!requestedScoreIds.add(item.animeId)) return
+            if (!inFlightScoreIds.add(item.animeId)) return
             lifecycleOwner.lifecycleScope.launch {
-                val score = app.ageRepository.ensureBangumiScore(item.animeId, item.title).orEmpty()
-                if (score.isBlank()) return@launch
-                scoreCache[item.animeId] = score
-                val position = items.indexOfFirst { it.animeId == item.animeId }
-                if (position >= 0) {
-                    notifyItemChanged(position)
-                } else {
-                    notifyDataSetChanged()
+                try {
+                    val score = app.ageRepository.ensureBangumiScore(item.animeId, item.title).orEmpty()
+                    if (score.isBlank()) return@launch
+                    scoreCache[item.animeId] = score
+                    val position = items.indexOfFirst { it.animeId == item.animeId }
+                    if (position >= 0) {
+                        notifyItemChanged(position)
+                    } else {
+                        notifyDataSetChanged()
+                    }
+                } finally {
+                    inFlightScoreIds.remove(item.animeId)
                 }
             }
+        }
+    }
+
+    private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? {
+        return when (this) {
+            is LifecycleOwner -> this
+            is ContextWrapper -> baseContext.findLifecycleOwner()
+            else -> null
         }
     }
 }
