@@ -267,9 +267,40 @@ class AgeRepository(
         bangumiService?.rebuildSubjectIndexAndRematchAll()
             ?: BangumiRematchSummary(
                 ageEntries = 0,
+                totalQueries = 0,
+                searchedQueries = 0,
+                skippedQueries = 0,
                 indexedSubjects = 0,
-                matchedEntries = 0,
+                updatedMatches = 0,
+                unchangedMatches = 0,
                 missingEntries = 0,
+            )
+    }
+
+    suspend fun rebuildBangumiIndexAndRematch(
+        onProgress: suspend (BangumiRematchProgress) -> Unit,
+    ): BangumiRematchSummary = withContext(Dispatchers.IO) {
+        backfillAgeLookupMetadataForMatchedEntries()
+        bangumiService?.rebuildSubjectIndexAndRematchAll(onProgress)
+            ?: BangumiRematchSummary(
+                ageEntries = 0,
+                totalQueries = 0,
+                searchedQueries = 0,
+                skippedQueries = 0,
+                indexedSubjects = 0,
+                updatedMatches = 0,
+                unchangedMatches = 0,
+                missingEntries = 0,
+            )
+    }
+
+    suspend fun bangumiIndexStats(): BangumiIndexStats = withContext(Dispatchers.IO) {
+        backfillAgeLookupMetadataForMatchedEntries()
+        bangumiService?.indexStats()
+            ?: BangumiIndexStats(
+                ageEntries = 0,
+                indexedQueries = 0,
+                indexedSubjects = 0,
             )
     }
 

@@ -61,7 +61,40 @@ data class BangumiMatchCandidate(
 
 data class BangumiRematchSummary(
     val ageEntries: Int,
+    val totalQueries: Int,
+    val searchedQueries: Int,
+    val skippedQueries: Int,
     val indexedSubjects: Int,
-    val matchedEntries: Int,
+    val updatedMatches: Int,
+    val unchangedMatches: Int,
     val missingEntries: Int,
+    val stoppedEarly: Boolean = false,
+    val failureMessage: String = "",
+)
+
+data class BangumiIndexStats(
+    val ageEntries: Int,
+    val indexedQueries: Int,
+    val indexedSubjects: Int,
+)
+
+enum class BangumiRematchStage {
+    PREPARING,
+    INDEXING,
+    MATCHING,
+    FINISHED,
+}
+
+data class BangumiRematchProgress(
+    val stage: BangumiRematchStage,
+    val current: Int,
+    val total: Int,
+    val stageLabel: String,
+    val detail: String,
+    val searchedQueries: Int = 0,
+    val skippedQueries: Int = 0,
+    val indexedSubjects: Int = 0,
+    val updatedMatches: Int = 0,
+    val unchangedMatches: Int = 0,
+    val missingEntries: Int = 0,
 )

@@ -5,15 +5,21 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
+import io.agedm.tv.data.BangumiIndexStats
 import io.agedm.tv.data.BangumiMatchCandidate
 import io.agedm.tv.data.BangumiMatchIssue
+import io.agedm.tv.data.BangumiRematchProgress
+import io.agedm.tv.data.BangumiRematchStage
 import io.agedm.tv.data.BangumiRematchSummary
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.databinding.ActivitySettingsBinding
+import io.agedm.tv.databinding.DialogBangumiRematchProgressBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -23,6 +29,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private var bangumiReviewJob: Job? = null
+    private var bangumiRematchJob: Job? = null
     private var suspiciousBangumiMatches: List<BangumiMatchIssue> = emptyList()
 
     private val app: AgeTvApplication
@@ -73,13 +80,14 @@ class SettingsActivity : AppCompatActivity() {
         } else {
             "当前账号：${bangumiAccount.username}。登录失效会自动清理，可重新扫码切换，或直接退出。"
         }
-        binding.bangumiRematchValueText.text = "执行"
-        binding.bangumiRematchHintText.text = "基于本地缓存的 AGE 动画元数据，重新搜索 Bangumi 构建 subject 索引，再在本地重跑 AGE -> Bangumi 匹配。"
+        binding.bangumiRematchValueText.text = "统计中"
+        binding.bangumiRematchHintText.text = "已完成的 Bangumi 查询会立即落盘；下次重建会复用已成功的查询，不会从头重新搜索。"
         lifecycleScope.launch {
             val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }
             binding.cacheSizeText.text = formatBytes(bytes)
         }
         renderBangumiMatchReviewSummary()
+        renderBangumiIndexSummary()
     }
 
     private fun openSpeedSelector() {
@@ -180,6 +188,23 @@ class SettingsActivity : AppCompatActivity() {
         } else {
             "发现 ${issues.size} 项可能误配，打开后可按 OK 进入手动匹配，也可批量重新匹配。"
         }
+    }
+
+    private fun renderBangumiIndexSummary() {
+        lifecycleScope.launch {
+            val stats = withContext(Dispatchers.IO) { app.ageRepository.bangumiIndexStats() }
+            updateBangumiIndexSummary(stats)
+        }
+    }
+
+    private fun updateBangumiIndexSummary(stats: BangumiIndexStats) {
+        binding.bangumiRematchValueText.text = when {
+            stats.indexedQueries > 0 -> "${stats.indexedQueries} 查询"
+            stats.ageEntries > 0 -> "${stats.ageEntries} 条目"
+            else -> "未建立"
+        }
+        binding.bangumiRematchHintText.text =
+            "本地已缓存 ${stats.ageEntries} 个 AGE 条目、${stats.indexedQueries} 个 Bangumi 查询、${stats.indexedSubjects} 个 Bangumi 条目。重建时会立即落盘，并跳过已成功的查询。"
     }
 
     private fun openBangumiMatchReview() {
@@ -306,7 +331,7 @@ class SettingsActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle("重建 Bangumi 匹配索引")
             .setMessage(
-                "将遍历本地已缓存的 AGE 动画元数据，重新搜索 Bangumi 构建 subject 索引，再在本地重跑 AGE -> Bangumi 匹配。\n\n这个过程会产生较多 Bangumi 搜索请求，适合在手动修正大量误配时执行。",
+                "会先检查本地已缓存的 AGE 动画元数据，再只对“从未成功搜索过”的 Bangumi 查询发起请求；每次查询成功后会立刻落盘保存。\n\n你可以在执行中途停止，已完成的查询和索引会保留，下次会直接续用。",
             )
             .setPositiveButton("开始") { _, _ ->
                 rebuildBangumiIndexAndRematch()
@@ -316,18 +341,44 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun rebuildBangumiIndexAndRematch() {
-        val progressDialog = MaterialAlertDialogBuilder(this)
-            .setTitle("正在重建 Bangumi 匹配")
-            .setMessage("正在重新搜索 Bangumi、构建本地索引并重跑匹配，请稍候...")
-            .setCancelable(false)
-            .show()
-        lifecycleScope.launch {
-            val summary = withContext(Dispatchers.IO) { app.ageRepository.rebuildBangumiIndexAndRematch() }
-            val issues = withContext(Dispatchers.IO) { app.ageRepository.listSuspiciousBangumiMatches() }
-            progressDialog.dismiss()
-            suspiciousBangumiMatches = issues
-            updateBangumiMatchReviewSummary(issues)
-            renderBangumiRematchResult(summary, issues.size)
+        bangumiRematchJob?.cancel()
+        val dialogBinding = DialogBangumiRematchProgressBinding.inflate(layoutInflater)
+        val progressDialog = createBangumiRematchDialog(dialogBinding)
+        updateBangumiRematchProgress(
+            binding = dialogBinding,
+            progress = BangumiRematchProgress(
+                stage = BangumiRematchStage.PREPARING,
+                current = 0,
+                total = 1,
+                stageLabel = "准备开始重建",
+                detail = "正在读取本地 AGE 元数据与 Bangumi 查询索引…",
+            ),
+        )
+        progressDialog.show()
+        bangumiRematchJob = lifecycleScope.launch {
+            try {
+                val summary = app.ageRepository.rebuildBangumiIndexAndRematch { progress ->
+                    withContext(Dispatchers.Main) {
+                        updateBangumiRematchProgress(dialogBinding, progress)
+                    }
+                }
+                val issues = withContext(Dispatchers.IO) { app.ageRepository.listSuspiciousBangumiMatches() }
+                progressDialog.dismiss()
+                suspiciousBangumiMatches = issues
+                updateBangumiMatchReviewSummary(issues)
+                renderBangumiRematchResult(summary, issues.size)
+                renderBangumiIndexSummary()
+            } catch (_: CancellationException) {
+                progressDialog.dismiss()
+                Toast.makeText(
+                    this@SettingsActivity,
+                    "已停止重建，已完成的 Bangumi 查询和索引已保留",
+                    Toast.LENGTH_LONG,
+                ).show()
+                renderBangumiIndexSummary()
+            } finally {
+                bangumiRematchJob = null
+            }
         }
     }
 
@@ -335,9 +386,53 @@ class SettingsActivity : AppCompatActivity() {
         val message = if (summary.ageEntries <= 0) {
             "没有可用于重建的本地 AGE 元数据"
         } else {
-            "已重建 ${summary.ageEntries} 项 AGE 元数据，索引 ${summary.indexedSubjects} 个 Bangumi 条目，重新匹配 ${summary.matchedEntries} 项，未命中 ${summary.missingEntries} 项，当前可疑 ${suspiciousCount} 项"
+            buildString {
+                append("已检查 ${summary.ageEntries} 个 AGE 条目，")
+                append("复用 ${summary.skippedQueries} 个已成功查询，")
+                append("新搜索 ${summary.searchedQueries} 个查询，")
+                append("索引 ${summary.indexedSubjects} 个 Bangumi 条目，")
+                append("更新 ${summary.updatedMatches} 项，保留 ${summary.unchangedMatches} 项，未命中 ${summary.missingEntries} 项")
+                if (summary.failureMessage.isNotBlank()) {
+                    append("。索引阶段提前结束：${summary.failureMessage}")
+                } else {
+                    append("。当前可疑 ${suspiciousCount} 项")
+                }
+            }
         }
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun createBangumiRematchDialog(
+        dialogBinding: DialogBangumiRematchProgressBinding,
+    ): AlertDialog {
+        return MaterialAlertDialogBuilder(this)
+            .setTitle("重建 Bangumi 匹配索引")
+            .setView(dialogBinding.root)
+            .setNegativeButton("停止") { _, _ ->
+                bangumiRematchJob?.cancel()
+            }
+            .setCancelable(false)
+            .create()
+    }
+
+    private fun updateBangumiRematchProgress(
+        binding: DialogBangumiRematchProgressBinding,
+        progress: BangumiRematchProgress,
+    ) {
+        val total = progress.total.coerceAtLeast(1)
+        val current = progress.current.coerceIn(0, total)
+        binding.stageText.text = progress.stageLabel
+        binding.detailText.text = progress.detail
+        binding.progressBar.max = total
+        binding.progressBar.progress = current
+        binding.progressText.text = when {
+            progress.total <= 0 -> "0%"
+            else -> "${(current * 100 / total).coerceIn(0, 100)}%  ($current / $total)"
+        }
+        binding.indexStatsText.text =
+            "索引阶段：新搜索 ${progress.searchedQueries}，复用 ${progress.skippedQueries}，本地 Bangumi 条目 ${progress.indexedSubjects}"
+        binding.matchStatsText.text =
+            "匹配阶段：更新 ${progress.updatedMatches}，保留 ${progress.unchangedMatches}，未命中 ${progress.missingEntries}"
     }
 
     private fun confirmClearCache() {

@@ -3,6 +3,8 @@ package io.agedm.tv.data
 import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.security.MessageDigest
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -16,6 +18,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
+import kotlin.coroutines.coroutineContext
 
 internal class BangumiService(
     private val store: PersistentJsonStore,
@@ -194,44 +197,171 @@ internal class BangumiService(
         return fresh
     }
 
-    suspend fun rebuildSubjectIndexAndRematchAll(): BangumiRematchSummary {
+    suspend fun rebuildSubjectIndexAndRematchAll(
+        onProgress: suspend (BangumiRematchProgress) -> Unit = {},
+    ): BangumiRematchSummary {
         val ageEntries = loadAllAgeLookupMetadata()
         if (ageEntries.isEmpty()) {
-            clearSubjectSnapshots()
+            onProgress(
+                BangumiRematchProgress(
+                    stage = BangumiRematchStage.FINISHED,
+                    current = 0,
+                    total = 0,
+                    stageLabel = "没有可重建的数据",
+                    detail = "当前本地没有已缓存的 AGE 动画元数据。",
+                ),
+            )
             return BangumiRematchSummary(
                 ageEntries = 0,
+                totalQueries = 0,
+                searchedQueries = 0,
+                skippedQueries = 0,
                 indexedSubjects = 0,
-                matchedEntries = 0,
+                updatedMatches = 0,
+                unchangedMatches = 0,
                 missingEntries = 0,
             )
         }
 
-        clearSubjectSnapshots()
-        ageEntries.forEach { metadata ->
-            buildSearchQueries(metadata).forEach { query ->
-                runCatching { performSearch(query) }
-            }
-        }
+        val allQueries = ageEntries
+            .flatMap(::buildSearchQueries)
+            .distinct()
 
-        var matchedEntries = 0
-        var missingEntries = 0
-        ageEntries.forEach { metadata ->
-            clearMatch(metadata.animeId)
-            val resolved = searchSubject(ageMetadata = metadata, includeRemoteSearch = false)
-            cacheResolvedMatch(metadata.animeId, resolved)
-            if (resolved == null) {
-                missingEntries += 1
-            } else {
-                matchedEntries += 1
-            }
-        }
-
-        return BangumiRematchSummary(
-            ageEntries = ageEntries.size,
-            indexedSubjects = loadSubjectSnapshots().size,
-            matchedEntries = matchedEntries,
-            missingEntries = missingEntries,
+        onProgress(
+            BangumiRematchProgress(
+                stage = BangumiRematchStage.PREPARING,
+                current = 0,
+                total = allQueries.size + ageEntries.size,
+                stageLabel = "准备重建 Bangumi 匹配",
+                detail = "已整理 ${ageEntries.size} 个 AGE 条目，准备检查 ${allQueries.size} 个 Bangumi 查询。",
+                indexedSubjects = loadSubjectSnapshots().size,
+            ),
         )
+
+        var searchedQueries = 0
+        var skippedQueries = 0
+        var indexingFailureMessage = ""
+        for ((index, query) in allQueries.withIndex()) {
+            coroutineContext.ensureActive()
+            if (indexingFailureMessage.isNotBlank()) break
+            val cachedQuery = readSearchQueryCache(query)
+            if (cachedQuery?.success == true) {
+                skippedQueries += 1
+            } else {
+                val response = runCatching { performSearch(query) }
+                    .onFailure { error ->
+                        indexingFailureMessage = error.message.orEmpty()
+                        writeSearchQueryCache(
+                            BangumiSearchQueryCacheEntry.failure(
+                                query = query,
+                                errorMessage = indexingFailureMessage,
+                            ),
+                        )
+                    }
+                    .getOrNull()
+                if (response != null) {
+                    writeSearchQueryCache(
+                        BangumiSearchQueryCacheEntry.success(
+                            query = query,
+                            subjectCount = response.data.size,
+                        ),
+                    )
+                    searchedQueries += 1
+                }
+            }
+            onProgress(
+                BangumiRematchProgress(
+                    stage = BangumiRematchStage.INDEXING,
+                    current = index + 1,
+                    total = allQueries.size + ageEntries.size,
+                    stageLabel = "正在构建 Bangumi 查询索引",
+                    detail = "查询 ${index + 1} / ${allQueries.size}：${query.take(24)}",
+                    searchedQueries = searchedQueries,
+                    skippedQueries = skippedQueries,
+                    indexedSubjects = loadSubjectSnapshots().size,
+                ),
+            )
+        }
+
+        var updatedMatches = 0
+        var unchangedMatches = 0
+        var missingEntries = 0
+        ageEntries.forEachIndexed { index, metadata ->
+            coroutineContext.ensureActive()
+            val existing = readResolvedMatchCache(metadata.animeId)?.toResolvedMatch()
+            val resolved = searchSubject(ageMetadata = metadata, includeRemoteSearch = false)
+            when {
+                resolved == null -> {
+                    missingEntries += 1
+                    if (existing == null) {
+                        cacheResolvedMatch(metadata.animeId, null)
+                    }
+                }
+
+                existing == resolved -> {
+                    unchangedMatches += 1
+                }
+
+                else -> {
+                    cacheResolvedMatch(metadata.animeId, resolved)
+                    if (existing?.subjectId != null && existing.subjectId != resolved.subjectId) {
+                        store.remove(cacheKey(metadata.animeId))
+                    }
+                    updatedMatches += 1
+                }
+            }
+            onProgress(
+                BangumiRematchProgress(
+                    stage = BangumiRematchStage.MATCHING,
+                    current = allQueries.size + index + 1,
+                    total = allQueries.size + ageEntries.size,
+                    stageLabel = if (indexingFailureMessage.isBlank()) {
+                        "正在重跑本地 Bangumi 匹配"
+                    } else {
+                        "索引阶段中断，继续使用已保存索引重跑匹配"
+                    },
+                    detail = "匹配 ${index + 1} / ${ageEntries.size}：${metadata.bestDisplayTitle().take(24)}",
+                    searchedQueries = searchedQueries,
+                    skippedQueries = skippedQueries,
+                    indexedSubjects = loadSubjectSnapshots().size,
+                    updatedMatches = updatedMatches,
+                    unchangedMatches = unchangedMatches,
+                    missingEntries = missingEntries,
+                ),
+            )
+        }
+
+        val summary = BangumiRematchSummary(
+            ageEntries = ageEntries.size,
+            totalQueries = allQueries.size,
+            searchedQueries = searchedQueries,
+            skippedQueries = skippedQueries,
+            indexedSubjects = loadSubjectSnapshots().size,
+            updatedMatches = updatedMatches,
+            unchangedMatches = unchangedMatches,
+            missingEntries = missingEntries,
+            failureMessage = indexingFailureMessage,
+        )
+        onProgress(
+            BangumiRematchProgress(
+                stage = BangumiRematchStage.FINISHED,
+                current = allQueries.size + ageEntries.size,
+                total = allQueries.size + ageEntries.size,
+                stageLabel = "Bangumi 重建完成",
+                detail = if (indexingFailureMessage.isBlank()) {
+                    "索引和重匹配已完成。"
+                } else {
+                    "索引阶段提前结束：$indexingFailureMessage"
+                },
+                searchedQueries = searchedQueries,
+                skippedQueries = skippedQueries,
+                indexedSubjects = summary.indexedSubjects,
+                updatedMatches = updatedMatches,
+                unchangedMatches = unchangedMatches,
+                missingEntries = missingEntries,
+            ),
+        )
+        return summary
     }
 
     private suspend fun loadMetadata(
@@ -422,7 +552,14 @@ internal class BangumiService(
 
         if (includeRemoteSearch) {
             searchQueries.forEachIndexed { queryIndex, query ->
+                if (readSearchQueryCache(query)?.success == true) return@forEachIndexed
                 val payload = performSearch(query)
+                writeSearchQueryCache(
+                    BangumiSearchQueryCacheEntry.success(
+                        query = query,
+                        subjectCount = payload.data.size,
+                    ),
+                )
                 payload.data.forEachIndexed candidateLoop@{ resultIndex, candidate ->
                     if (candidate.id <= 0L) return@candidateLoop
                     val seed = SubjectCandidateSeed(
@@ -940,6 +1077,17 @@ internal class BangumiService(
 
     private fun ageLookupCacheKeyPrefix(): String = "age_lookup_"
 
+    private fun searchQueryCacheKey(query: String): String = "bgm_query_${queryCacheHash(query)}"
+
+    private fun searchQueryCacheKeyPrefix(): String = "bgm_query_"
+
+    private fun queryCacheHash(query: String): String {
+        val normalized = normalizeTitle(query).ifBlank { query.trim().lowercase(Locale.US) }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(normalized.toByteArray())
+            .joinToString("") { byte -> "%02x".format(byte) }
+    }
+
     private fun AgeBangumiLookupMetadata.mergeFallbackTitle(fallbackTitle: String): AgeBangumiLookupMetadata {
         return if (title.isNotBlank()) this else copy(title = fallbackTitle)
     }
@@ -980,10 +1128,13 @@ internal class BangumiService(
             .sortedBy { it.bestDisplayTitle() }
     }
 
-    private fun clearSubjectSnapshots() {
-        subjectSnapshotCache.clear()
-        store.listKeys(subjectCacheKeyPrefix()).forEach(store::remove)
-        subjectSnapshotCacheLoaded = true
+    fun indexStats(): BangumiIndexStats {
+        return BangumiIndexStats(
+            ageEntries = loadAllAgeLookupMetadata().size,
+            indexedQueries = store.listKeys(searchQueryCacheKeyPrefix())
+                .count { key -> readSearchQueryCacheByKey(key)?.success == true },
+            indexedSubjects = loadSubjectSnapshots().size,
+        )
     }
 
     private fun readSubjectSnapshot(subjectId: Long): BangumiSubjectSnapshot? {
@@ -1034,6 +1185,19 @@ internal class BangumiService(
         val merged = readSubjectSnapshot(snapshot.subjectId).mergeWith(snapshot)
         subjectSnapshotCache[snapshot.subjectId] = merged
         store.write(subjectCacheKey(snapshot.subjectId), json.encodeToString(merged))
+    }
+
+    private fun readSearchQueryCache(query: String): BangumiSearchQueryCacheEntry? {
+        return readSearchQueryCacheByKey(searchQueryCacheKey(query))
+    }
+
+    private fun readSearchQueryCacheByKey(key: String): BangumiSearchQueryCacheEntry? {
+        val body = store.read(key) ?: return null
+        return runCatching { json.decodeFromString<BangumiSearchQueryCacheEntry>(body) }.getOrNull()
+    }
+
+    private fun writeSearchQueryCache(entry: BangumiSearchQueryCacheEntry) {
+        store.write(searchQueryCacheKey(entry.normalizedQuery), json.encodeToString(entry))
     }
 
     private fun String.matchesCandidateWebsite(candidate: BangumiSubjectCandidateData): Boolean {
@@ -1260,6 +1424,40 @@ internal class BangumiService(
         val tags: List<String> = emptyList(),
         val updatedAtMs: Long = 0L,
     )
+
+    @Serializable
+    private data class BangumiSearchQueryCacheEntry(
+        val query: String = "",
+        val normalizedQuery: String = "",
+        val searchedAtMs: Long = 0L,
+        val success: Boolean = false,
+        val subjectCount: Int = 0,
+        val errorMessage: String = "",
+    ) {
+        companion object {
+            fun success(query: String, subjectCount: Int): BangumiSearchQueryCacheEntry {
+                val normalized = query.trim()
+                return BangumiSearchQueryCacheEntry(
+                    query = query,
+                    normalizedQuery = normalized,
+                    searchedAtMs = System.currentTimeMillis(),
+                    success = true,
+                    subjectCount = subjectCount,
+                )
+            }
+
+            fun failure(query: String, errorMessage: String): BangumiSearchQueryCacheEntry {
+                val normalized = query.trim()
+                return BangumiSearchQueryCacheEntry(
+                    query = query,
+                    normalizedQuery = normalized,
+                    searchedAtMs = System.currentTimeMillis(),
+                    success = false,
+                    errorMessage = errorMessage,
+                )
+            }
+        }
+    }
 
     private data class BangumiSubjectCandidateData(
         val subjectId: Long = 0L,
