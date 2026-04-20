@@ -98,6 +98,7 @@ class MainActivity : AppCompatActivity() {
     private var lastNavUpPressUptimeMs: Long = 0L
     private var slideFromRight = true
     private var pendingFocusRestoreViewId: Int? = null
+    private var pendingFocusRestoreAnimeId: Long? = null
     private var selectionMode = false
     private var currentVisibleCards: List<AnimeCard> = emptyList()
     private val selectedAnimeIds = linkedSetOf<Long>()
@@ -157,6 +158,7 @@ class MainActivity : AppCompatActivity() {
         focusNavJob?.cancel()
         clearNavFocusSwitchArm()
         binding.root.post {
+            if (restorePendingAnimeFocusIfPossible()) return@post
             if (restorePendingFocusIfPossible()) return@post
             val focused = currentFocus
             if (focused == null) {
@@ -526,12 +528,10 @@ class MainActivity : AppCompatActivity() {
             runCatching { app.bangumiAccountService.fetchMyPage() }
                 .onSuccess { page ->
                     if (!shouldHandleLoadResult(requestId)) return@launch
-                    val localHistory = app.playbackStore.getRecentRecords(12).map(::recordToCard)
+                    val localHistory = myPageFallbackSections()
                     val sections = buildList {
                         page?.sections?.let(::addAll)
-                        if (localHistory.isNotEmpty()) {
-                            add(BrowseSection("本地继续观看", "电视端播放记录", localHistory))
-                        }
+                        addAll(localHistory)
                     }
                     currentTotal = sections.sumOf { it.items.size }
                     currentPageSize = currentTotal.coerceAtLeast(1)
@@ -544,9 +544,33 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 .onFailure { error ->
-                    handleLoadFailure(requestId, "我的页面加载失败", error)
+                    if (!shouldHandleLoadResult(requestId)) return@launch
+                    val fallbackSections = myPageFallbackSections()
+                    if (fallbackSections.isNotEmpty()) {
+                        currentTotal = fallbackSections.sumOf { it.items.size }
+                        currentPageSize = currentTotal.coerceAtLeast(1)
+                        showSections(
+                            sections = fallbackSections,
+                            emptyMessage = "Bangumi 个人页加载失败，已回退到本地记录",
+                        )
+                        showOverlayMessage(
+                            if (error.message.isNullOrBlank()) {
+                                "Bangumi 个人页加载失败，已回退到本地记录"
+                            } else {
+                                "Bangumi 个人页加载失败：${error.message.orEmpty()}"
+                            },
+                        )
+                    } else {
+                        handleLoadFailure(requestId, "我的页面加载失败", error)
+                    }
                 }
         }
+    }
+
+    private fun myPageFallbackSections(): List<BrowseSection> {
+        val localHistory = app.playbackStore.getRecentRecords(12).map(::recordToCard)
+        if (localHistory.isEmpty()) return emptyList()
+        return listOf(BrowseSection("本地继续观看", "电视端播放记录", localHistory))
     }
 
     private fun loadSearch(page: Int) {
@@ -945,6 +969,29 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun restorePendingAnimeFocusIfPossible(): Boolean {
+        val animeId = pendingFocusRestoreAnimeId ?: return false
+        val target = binding.contentRecycler.findViewWithTag<View>(animeFocusTag(animeId))
+        return if (target != null && target.isShown && target.isFocusable) {
+            pendingFocusRestoreAnimeId = null
+            target.requestFocus()
+        } else {
+            false
+        }
+    }
+
+    private fun currentFocusedAnimeId(): Long? {
+        var target: View? = currentFocus
+        while (target != null) {
+            val tag = target.tag as? String
+            if (tag?.startsWith(ANIME_FOCUS_TAG_PREFIX) == true) {
+                return tag.removePrefix(ANIME_FOCUS_TAG_PREFIX).toLongOrNull()
+            }
+            target = target.parent as? View
+        }
+        return null
+    }
+
     private fun requestBestContentFocus() {
         val firstFilter = visibleFilterButtons().firstOrNull()
         when {
@@ -1153,7 +1200,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun configureBrowseSelection() {
+    private fun configureBrowseSelection(focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId()) {
+        pendingFocusRestoreAnimeId = focusAnimeId
         val enabled = canUseBatchSelection()
         val longClickHandler = if (enabled) {
             { card: AnimeCard -> handleBatchSelectionLongClick(card) }
@@ -1169,6 +1217,9 @@ class MainActivity : AppCompatActivity() {
         sectionAdapter.selectedIds = selected
         gridAdapter.notifyDataSetChanged()
         sectionAdapter.notifyDataSetChanged()
+        binding.contentRecycler.post {
+            restorePendingAnimeFocusIfPossible()
+        }
     }
 
     private fun canUseBatchSelection(): Boolean {
@@ -1178,16 +1229,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleBatchSelectionLongClick(card: AnimeCard) {
+        pendingFocusRestoreAnimeId = card.animeId
         if (!selectionMode) {
             selectionMode = true
             selectedAnimeIds.clear()
             selectedAnimeIds += card.animeId
-            configureBrowseSelection()
+            configureBrowseSelection(card.animeId)
             showOverlayMessage("多选模式：按 OK 勾选，长按执行批量标记，返回退出")
             return
         }
         selectedAnimeIds += card.animeId
-        configureBrowseSelection()
+        configureBrowseSelection(card.animeId)
         showBatchStatusDialog()
     }
 
@@ -1200,17 +1252,18 @@ class MainActivity : AppCompatActivity() {
             selectedAnimeIds.remove(card.animeId)
         }
         if (selectedAnimeIds.isEmpty()) {
-            exitSelectionMode(silent = true)
+            exitSelectionMode(silent = true, focusAnimeId = card.animeId)
         } else {
-            configureBrowseSelection()
+            configureBrowseSelection(card.animeId)
         }
     }
 
-    private fun exitSelectionMode(silent: Boolean = false) {
+    private fun exitSelectionMode(silent: Boolean = false, focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId()) {
         if (!selectionMode && selectedAnimeIds.isEmpty()) return
+        pendingFocusRestoreAnimeId = focusAnimeId
         selectionMode = false
         selectedAnimeIds.clear()
-        configureBrowseSelection()
+        configureBrowseSelection(focusAnimeId)
         if (!silent) {
             showOverlayMessage("已退出多选模式")
         }
@@ -1222,15 +1275,23 @@ class MainActivity : AppCompatActivity() {
             exitSelectionMode(silent = true)
             return
         }
+        val focusAnimeId = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId() ?: cards.firstOrNull()?.animeId
         MaterialAlertDialogBuilder(this)
             .setTitle("批量标记 ${cards.size} 项")
             .setItems(arrayOf("标记看过", "标记抛弃")) { _, which ->
                 val status = if (which == 0) BangumiCollectionStatus.COLLECT else BangumiCollectionStatus.DROPPED
                 app.bangumiAccountService.enqueueBatchStatusUpdate(cards, status)
-                exitSelectionMode(silent = true)
+                exitSelectionMode(silent = true, focusAnimeId = focusAnimeId)
                 showOverlayMessage("已加入 Bangumi 同步队列：${cards.size} 项")
             }
             .setNegativeButton("取消", null)
+            .setOnDismissListener {
+                binding.root.post {
+                    if (!restorePendingAnimeFocusIfPossible()) {
+                        requestBestContentFocus()
+                    }
+                }
+            }
             .show()
     }
 
@@ -1267,12 +1328,15 @@ class MainActivity : AppCompatActivity() {
         private const val NAV_FOCUS_ARM_WINDOW_MS = 600L
         private const val SETTINGS_SHORTCUT_WINDOW_MS = 1_100L
         private const val STALE_REFRESH_DELAY_MS = 180L
+        private const val ANIME_FOCUS_TAG_PREFIX = "anime-card:"
 
         fun createIntent(context: Context, route: AgeRoute? = null): Intent {
             return Intent(context, MainActivity::class.java).apply {
                 route?.let { putExtra(EXTRA_OPEN_ROUTE, AgeLinks.buildWebUrl(it)) }
             }
         }
+
+        fun animeFocusTag(animeId: Long): String = "$ANIME_FOCUS_TAG_PREFIX$animeId"
 
         private val REGION_OPTIONS = listOf(
             FilterOption("全部", "all"),

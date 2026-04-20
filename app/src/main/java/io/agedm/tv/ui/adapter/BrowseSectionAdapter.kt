@@ -19,6 +19,10 @@ class BrowseSectionAdapter(
 
     private var items: List<BrowseSection> = emptyList()
 
+    init {
+        setHasStableIds(true)
+    }
+
     fun submitList(sections: List<BrowseSection>) {
         items = sections
         notifyDataSetChanged()
@@ -40,6 +44,11 @@ class BrowseSectionAdapter(
     }
 
     override fun getItemCount(): Int = items.size
+
+    override fun getItemId(position: Int): Long {
+        val item = items[position]
+        return "${item.title}|${item.subtitle}".hashCode().toLong()
+    }
 
     class SectionViewHolder(
         private val binding: ItemBrowseSectionBinding,

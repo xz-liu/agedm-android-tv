@@ -3,6 +3,7 @@ package io.agedm.tv.data
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -538,6 +539,7 @@ class AgeRepository(
     ): AgeRelatedItem? {
         val cleanedTitles = titles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (cleanedTitles.isEmpty()) return null
+        val searchableTitles = preferredBangumiSearchTitles(cleanedTitles)
 
         readBangumiAgeAlignment(cleanedTitles)?.let { cached ->
             val cachedItem = cached.toItem()
@@ -547,20 +549,26 @@ class AgeRepository(
 
         var bestCard: AnimeCard? = null
         var bestScore = 0
-        for (query in cleanedTitles) {
-            val results = runCatching { search(query = query, page = 1, size = 12) }
-                .getOrNull()
-                ?.items
-                .orEmpty()
-            for (candidate in results) {
-                if (candidate.animeId == excludeAnimeId) continue
-                val score = scoreBangumiAlignment(
-                    titles = cleanedTitles,
-                    candidateTitle = candidate.title,
-                )
-                if (score > bestScore) {
-                    bestScore = score
-                    bestCard = candidate
+        for (query in searchableTitles) {
+            val seenIds = mutableSetOf<Long>()
+            for (searchQuery in buildBangumiAlignmentQueries(query)) {
+                val results = runCatching { searchBangumiAlignmentCandidates(searchQuery) }
+                    .getOrNull()
+                    .orEmpty()
+                for (candidate in results) {
+                    if (candidate.id == excludeAnimeId || !seenIds.add(candidate.id)) continue
+                    val score = scoreBangumiAlignment(
+                        titles = cleanedTitles,
+                        candidateTitles = listOf(
+                            candidate.name.orEmpty(),
+                            candidate.originalName.orEmpty(),
+                            candidate.otherName.orEmpty(),
+                        ),
+                    )
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestCard = candidate.toAnimeCard()
+                    }
                 }
             }
         }
@@ -575,6 +583,16 @@ class AgeRepository(
         }
         writeBangumiAgeAlignment(cleanedTitles, matched)
         return matched?.takeIf { it.animeId != excludeAnimeId }
+    }
+
+    private fun searchBangumiAlignmentCandidates(query: String): List<AgeCatalogVideo> {
+        val body = cachedGet(
+            key = searchCacheKey(query, 1),
+            ttlMs = TTL_SEARCH_MS,
+            url = apiUrl("search", "query" to query, "page" to "1"),
+        )
+        val response = json.decodeFromString<AgeSearchResponse>(body)
+        return if (response.code == 200) response.data.videos else emptyList()
     }
 
     private fun readBangumiAgeAlignment(titles: List<String>): BangumiAgeAlignmentCacheEntry? {
@@ -619,32 +637,107 @@ class AgeRepository(
 
     private fun scoreBangumiAlignment(
         titles: List<String>,
-        candidateTitle: String,
+        candidateTitles: List<String>,
     ): Int {
-        val normalizedCandidate = normalizeBangumiLookupTitle(candidateTitle)
-        if (normalizedCandidate.isBlank()) return 0
-
+        val normalizedCandidates = candidateTitles
+            .map(::normalizeBangumiLookupTitle)
+            .filter { it.isNotBlank() }
+        if (normalizedCandidates.isEmpty()) return 0
         var best = 0
         titles.forEach { rawTitle ->
             val normalizedTitle = normalizeBangumiLookupTitle(rawTitle)
             if (normalizedTitle.isBlank()) return@forEach
-            var score = 0
-            if (normalizedTitle == normalizedCandidate) score += 1000
-            if (normalizedCandidate.contains(normalizedTitle) || normalizedTitle.contains(normalizedCandidate)) {
-                score += 360
+            normalizedCandidates.forEach { normalizedCandidate ->
+                var score = 0
+                if (normalizedTitle == normalizedCandidate) score += 1000
+                if (normalizedCandidate.contains(normalizedTitle) || normalizedTitle.contains(normalizedCandidate)) {
+                    score += 360
+                }
+                val commonPrefix = normalizedTitle.zip(normalizedCandidate)
+                    .takeWhile { it.first == it.second }
+                    .count()
+                score += commonPrefix * 8
+                if (score > best) best = score
             }
-            val commonPrefix = normalizedTitle.zip(normalizedCandidate)
-                .takeWhile { it.first == it.second }
-                .count()
-            score += commonPrefix * 8
-            if (score > best) best = score
         }
         return best
     }
 
+    private fun preferredBangumiSearchTitles(titles: List<String>): List<String> {
+        val chineseLike = titles.filter(::containsHanCharacters)
+        if (chineseLike.isNotEmpty()) return chineseLike
+        val nonJapanese = titles.filterNot(::containsJapaneseKana)
+        return if (nonJapanese.isNotEmpty()) nonJapanese else titles
+    }
+
+    private fun containsHanCharacters(value: String): Boolean {
+        return value.any { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN }
+    }
+
+    private fun containsJapaneseKana(value: String): Boolean {
+        return value.any { ch ->
+            val block = Character.UnicodeBlock.of(ch)
+            block == Character.UnicodeBlock.HIRAGANA || block == Character.UnicodeBlock.KATAKANA
+        }
+    }
+
+    private fun buildBangumiAlignmentQueries(title: String): List<String> {
+        val trimmed = title.trim()
+        if (trimmed.isBlank()) return emptyList()
+
+        val compact = trimmed.removeAgeSearchPunctuation()
+        val seasonless = trimmed.stripSeasonHint().trim()
+        val compactSeasonless = seasonless.removeAgeSearchPunctuation()
+        val queries = linkedSetOf<String>()
+
+        fun add(value: String) {
+            val normalized = value.trim()
+            if (normalized.length >= 2) {
+                queries += normalized
+            }
+        }
+
+        add(trimmed)
+        add(compact)
+        add(seasonless)
+        add(compactSeasonless)
+
+        val fragmentSource = compactSeasonless.ifBlank { compact }.ifBlank { trimmed }
+        if (fragmentSource.length >= 6) {
+            listOf(
+                fragmentSource.drop(2),
+                fragmentSource.drop(4),
+                fragmentSource.dropLast(2),
+                fragmentSource.dropLast(4),
+            ).forEach(::add)
+            listOf(4, 6, 8).forEach { length ->
+                if (fragmentSource.length > length) {
+                    add(fragmentSource.take(length))
+                    add(fragmentSource.takeLast(length))
+                }
+            }
+        }
+
+        return queries.take(MAX_ALIGNMENT_SEARCH_QUERIES)
+    }
+
+    private fun String.stripSeasonHint(): String {
+        return this
+            .replace(Regex("""\s*第\s*[0-9一二三四五六七八九十两]+[季期部篇]\s*$"""), "")
+            .replace(Regex("""\s*[0-9]+(?:st|nd|rd|th)?\s*season\s*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*season\s*[0-9]+\s*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$"""), "")
+            .replace(Regex("""\s+[0-9]+$"""), "")
+    }
+
+    private fun String.removeAgeSearchPunctuation(): String {
+        return replace(Regex("[\\s\\u3000·・:：\\-_/\\\\|()（）\\[\\]【】《》「」『』\"'`!！?？,.，。~～〜]+"), "")
+    }
+
     private fun normalizeBangumiLookupTitle(value: String): String {
-        return value.lowercase()
-            .replace(Regex("[\\s·:：\\-_/\\\\|()（）\\[\\]【】《》\"'`!！?？,.，。]+"), "")
+        return Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .lowercase()
+            .replace(Regex("[\\s\\u3000·・:：\\-_/\\\\|()（）\\[\\]【】《》「」『』\"'`!！?？,.，。~～〜]+"), "")
     }
 
     private fun AgeDetailResponse.toAnimeDetail(
@@ -828,6 +921,7 @@ class AgeRepository(
         private const val DEFAULT_COVER_BASE = "https://cdn.aqdstatic.com:966/age"
         private const val MOBILE_REFERER = "https://m.agedm.io/"
         private const val DESKTOP_REFERER = "https://www.agedm.io/"
+        private const val MAX_ALIGNMENT_SEARCH_QUERIES = 10
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 

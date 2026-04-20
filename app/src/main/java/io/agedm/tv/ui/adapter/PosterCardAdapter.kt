@@ -12,6 +12,7 @@ import androidx.recyclerview.widget.RecyclerView
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.databinding.ItemPosterCardBinding
+import io.agedm.tv.ui.MainActivity
 import io.agedm.tv.ui.loadPosterImage
 import kotlinx.coroutines.launch
 
@@ -27,6 +28,10 @@ class PosterCardAdapter(
     private var items: List<AnimeCard> = emptyList()
     private val scoreCache = mutableMapOf<Long, String>()
     private val inFlightScoreIds = mutableSetOf<Long>()
+
+    init {
+        setHasStableIds(true)
+    }
 
     fun submitList(cards: List<AnimeCard>) {
         items = cards
@@ -49,6 +54,8 @@ class PosterCardAdapter(
 
     override fun getItemCount(): Int = items.size
 
+    override fun getItemId(position: Int): Long = items[position].animeId
+
     inner class PosterViewHolder(
         private val binding: ItemPosterCardBinding,
     ) : RecyclerView.ViewHolder(binding.root) {
@@ -63,6 +70,7 @@ class PosterCardAdapter(
             binding.badgeText.visibility =
                 if (item.badge.isBlank()) View.GONE else View.VISIBLE
             bindScore(item)
+            binding.cardRoot.tag = MainActivity.animeFocusTag(item.animeId)
             val selected = item.animeId in selectedIds
             binding.selectionScrim.visibility = if (selectionMode && selected) View.VISIBLE else View.GONE
             binding.selectionText.visibility = if (selectionMode && selected) View.VISIBLE else View.GONE

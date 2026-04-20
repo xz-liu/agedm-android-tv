@@ -292,13 +292,24 @@ class BangumiAccountService(
     suspend fun fetchMyPage(): BangumiMyPageData? {
         val session = _account.value ?: return null
         val refreshedSession = refreshStoredAccount(session)
-        val sections = buildList {
-            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.DO, "在看", 12))
-            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.WISH, "想看", 12))
-            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.COLLECT, "看过", 12))
-            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.ON_HOLD, "搁置", 12))
-            add(fetchCollectionSection(refreshedSession, BangumiCollectionStatus.DROPPED, "抛弃", 12))
-        }.filter { it.items.isNotEmpty() }
+        var loadedAnySection = false
+        var lastError: Throwable? = null
+        val sections = listOf(
+            Triple(BangumiCollectionStatus.DO, "在看", 12),
+            Triple(BangumiCollectionStatus.WISH, "想看", 12),
+            Triple(BangumiCollectionStatus.COLLECT, "看过", 12),
+            Triple(BangumiCollectionStatus.ON_HOLD, "搁置", 12),
+            Triple(BangumiCollectionStatus.DROPPED, "抛弃", 12),
+        )
+            .mapNotNull { (status, title, limit) ->
+                runCatching { fetchCollectionSection(refreshedSession, status, title, limit) }
+                    .onSuccess { loadedAnySection = true }
+                    .onFailure { lastError = it }
+                    .getOrNull()
+            }
+            .filter { it.items.isNotEmpty() }
+        val fetchError = lastError
+        if (!loadedAnySection && fetchError != null) throw fetchError
         return BangumiMyPageData(
             username = refreshedSession.username,
             displayName = refreshedSession.displayName.ifBlank { refreshedSession.username },
@@ -317,34 +328,39 @@ class BangumiAccountService(
             cookies = requireSessionCookies(),
         )
         val document = Jsoup.parse(response.body)
-        val cards = document.select("#browserItemList li.item").mapNotNull { item ->
-            val link = item.selectFirst("a.subjectCover[href*=/subject/], h3 a[href*=/subject/]") ?: return@mapNotNull null
-            val subjectId = link.attr("href").substringAfterLast('/').toLongOrNull() ?: return@mapNotNull null
-            val alignedAnimeId = store.findAnimeIdBySubjectId(subjectId)
-                ?: alignSubjectToAge(subjectId, item)
-                ?: return@mapNotNull null
-            store.saveCollectionStatus(
-                alignedAnimeId,
-                BangumiCollectionCacheEntry(
-                    subjectId = subjectId,
-                    status = status.wireName,
-                    updatedAtMs = System.currentTimeMillis(),
-                ),
-            )
-            val titleText = item.selectFirst("h3 a.l")?.text()?.trim().orEmpty()
-            val subtitle = item.selectFirst("p.collectInfo")?.text()?.trim().orEmpty()
-            val cover = item.selectFirst("img")?.let { img ->
-                img.attr("src").ifBlank { img.attr("data-cfsrc") }
-            }.orEmpty()
-            AnimeCard(
-                animeId = alignedAnimeId,
-                title = titleText,
-                cover = cover,
-                badge = status.label,
-                subtitle = subtitle,
-                bgmScore = repository.peekBangumiScore(alignedAnimeId).orEmpty(),
-            )
-        }.take(limit)
+        val cards = buildList {
+            for (item in document.select("#browserItemList li.item")) {
+                if (size >= limit) break
+                val link = item.selectFirst("a.subjectCover[href*=/subject/], h3 a[href*=/subject/]") ?: continue
+                val subjectId = link.attr("href").substringAfterLast('/').toLongOrNull() ?: continue
+                val alignedAnimeId = store.findAnimeIdBySubjectId(subjectId)
+                    ?: alignSubjectToAge(subjectId, item)
+                    ?: continue
+                store.saveCollectionStatus(
+                    alignedAnimeId,
+                    BangumiCollectionCacheEntry(
+                        subjectId = subjectId,
+                        status = status.wireName,
+                        updatedAtMs = System.currentTimeMillis(),
+                    ),
+                )
+                val titleText = extractCollectionTitles(item).firstOrNull().orEmpty()
+                val subtitle = item.selectFirst("p.collectInfo")?.text()?.trim().orEmpty()
+                val cover = item.selectFirst("img")?.let { img ->
+                    img.attr("src").ifBlank { img.attr("data-cfsrc") }
+                }.orEmpty()
+                add(
+                    AnimeCard(
+                        animeId = alignedAnimeId,
+                        title = titleText,
+                        cover = cover,
+                        badge = status.label,
+                        subtitle = subtitle,
+                        bgmScore = repository.peekBangumiScore(alignedAnimeId).orEmpty(),
+                    ),
+                )
+            }
+        }
         return BrowseSection(
             title = title,
             subtitle = "Bangumi · ${cards.size} 条",
@@ -353,13 +369,24 @@ class BangumiAccountService(
     }
 
     private suspend fun alignSubjectToAge(subjectId: Long, item: org.jsoup.nodes.Element): Long? {
-        val titles = listOfNotNull(
-            item.selectFirst("h3 a.l")?.text()?.trim()?.takeIf { it.isNotBlank() },
-            item.selectFirst("h3 small.grey")?.text()?.trim()?.takeIf { it.isNotBlank() },
-        )
+        val titles = extractCollectionTitles(item)
         val aligned = repository.alignBangumiTitlesToAge(titles) ?: return null
         store.saveSubjectMatch(subjectId, aligned.animeId)
         return aligned.animeId
+    }
+
+    private fun extractCollectionTitles(item: org.jsoup.nodes.Element): List<String> {
+        return sequenceOf(
+            item.selectFirst("h3 a.l")?.text(),
+            item.selectFirst("h3 small.grey")?.text(),
+            item.selectFirst("a.subjectCover")?.attr("title"),
+            item.selectFirst("a.subjectCover img")?.attr("alt"),
+            item.selectFirst("h3 a[href*=/subject/]")?.attr("title"),
+        )
+            .map { it?.trim().orEmpty() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
     }
 
     private suspend fun processQueuedWrite(task: QueuedStatusWrite) {
