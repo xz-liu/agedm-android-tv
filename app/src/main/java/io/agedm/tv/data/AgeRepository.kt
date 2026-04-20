@@ -182,6 +182,7 @@ class AgeRepository(
         title: String,
         forceRefresh: Boolean = false,
     ): BangumiMetadata? = withContext(Dispatchers.IO) {
+        rememberBangumiLookupTitle(animeId, title)
         bangumiService?.fetch(animeId, title, forceRefresh)
     }
 
@@ -191,6 +192,7 @@ class AgeRepository(
         forceRefresh: Boolean = false,
     ) {
         if (title.isBlank()) return
+        rememberBangumiLookupTitle(animeId, title)
         if (forceRefresh) {
             bangumiPrefetchJobs.remove(animeId)?.cancel()
         } else {
@@ -211,6 +213,7 @@ class AgeRepository(
     }
 
     suspend fun ensureBangumiScore(animeId: Long, title: String): String? = withContext(Dispatchers.IO) {
+        rememberBangumiLookupTitle(animeId, title)
         bangumiService?.peek(animeId)?.scoreLabel?.takeIf { it.isNotBlank() }?.let { return@withContext it }
         val service = bangumiService ?: return@withContext null
         bangumiScoreRequests[animeId]?.let { running ->
@@ -479,14 +482,43 @@ class AgeRepository(
         items.forEach(::cacheAgeLookupMetadata)
     }
 
+    private suspend fun ensureAgeLookupMetadata(animeId: Long): AgeBangumiLookupMetadata? {
+        readAgeLookupMetadata(animeId)?.let { return it }
+        val body = runCatching {
+            cachedGet(
+                key = "detail_$animeId",
+                ttlMs = TTL_DETAIL_MS,
+                url = apiUrl("detail/$animeId"),
+            )
+        }.getOrNull() ?: return null
+        val response = runCatching { json.decodeFromString<AgeDetailResponse>(body) }.getOrNull() ?: return null
+        val metadata = response.video.toLookupMetadata()
+        cacheAgeLookupMetadata(metadata)
+        return metadata
+    }
+
+    private fun rememberBangumiLookupTitle(animeId: Long, title: String) {
+        if (animeId <= 0L || title.isBlank()) return
+        cacheAgeLookupMetadata(
+            AgeBangumiLookupMetadata(
+                animeId = animeId,
+                title = title,
+                updatedAtMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private fun readAgeLookupMetadata(animeId: Long): AgeBangumiLookupMetadata? {
+        val store = persistentStore ?: return null
+        val body = store.read(ageLookupCacheKey(animeId)) ?: return null
+        return runCatching { json.decodeFromString<AgeBangumiLookupMetadata>(body) }.getOrNull()
+    }
+
     private fun cacheAgeLookupMetadata(item: AgeBangumiLookupMetadata?) {
         val snapshot = item ?: return
         if (snapshot.animeId <= 0L) return
         val store = persistentStore ?: return
-        val existing = runCatching {
-            store.read(ageLookupCacheKey(snapshot.animeId))
-                ?.let { json.decodeFromString<AgeBangumiLookupMetadata>(it) }
-        }.getOrNull()
+        val existing = readAgeLookupMetadata(snapshot.animeId)
         val merged = existing.mergeWith(snapshot)
         store.write(ageLookupCacheKey(snapshot.animeId), json.encodeToString(merged))
     }

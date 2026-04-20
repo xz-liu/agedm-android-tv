@@ -115,7 +115,7 @@ internal class BangumiService(
         }.getOrElse { cached }
     }
 
-    fun listSuspiciousMatches(limit: Int = DEFAULT_REVIEW_LIMIT): List<BangumiMatchIssue> {
+    suspend fun listSuspiciousMatches(limit: Int = DEFAULT_REVIEW_LIMIT): List<BangumiMatchIssue> {
         return store.listKeys(matchCacheKeyPrefix())
             .mapNotNull { key ->
                 val animeId = key.removePrefix(matchCacheKeyPrefix()).toLongOrNull() ?: return@mapNotNull null
