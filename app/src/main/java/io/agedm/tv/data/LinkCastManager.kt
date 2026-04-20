@@ -217,7 +217,12 @@ class LinkCastManager(
 
         private fun handleSearch(session: IHTTPSession): Response {
             val q = session.parameters["q"]?.firstOrNull()?.trim().orEmpty()
-            if (q.isBlank()) return json("[]")
+            if (q.isBlank()) {
+                return json("[]").apply {
+                    addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+                    addHeader("Pragma", "no-cache")
+                }
+            }
             return try {
                 val results = runBlocking { repository.search(q, 1, 20) }
                 val array = buildString {
@@ -236,9 +241,15 @@ class LinkCastManager(
                     }
                     append(']')
                 }
-                json(array)
+                json(array).apply {
+                    addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+                    addHeader("Pragma", "no-cache")
+                }
             } catch (_: Throwable) {
-                json("[]")
+                json("[]").apply {
+                    addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+                    addHeader("Pragma", "no-cache")
+                }
             }
         }
 
@@ -332,21 +343,37 @@ class LinkCastManager(
                   <div class="toast" id="toast"></div>
                   <script>
                     var timer=null,lastQ='';
+                    var searchSeq=0,activeSearchSeq=0,currentSearchController=null;
                     var input=document.getElementById('searchInput');
                     var list=document.getElementById('list');
                     var empty=document.getElementById('empty');
                     var spinner=document.getElementById('spinner');
                     var toast=document.getElementById('toast');
+                    function clearResults(){
+                      list.innerHTML='';
+                      empty.style.display='none';
+                      spinner.style.display='none';
+                    }
                     function doSearch(q){
+                      var requestId=++searchSeq;
+                      activeSearchSeq=requestId;
+                      if(currentSearchController){currentSearchController.abort();currentSearchController=null;}
                       if(!q){
-                        list.innerHTML='';empty.style.display='none';spinner.style.display='none';
+                        clearResults();
                         mirror('', []);
                         return;
                       }
                       spinner.style.display='block';list.innerHTML='';empty.style.display='none';
-                      fetch('/api/search?q='+encodeURIComponent(q))
+                      var controller=window.AbortController?new AbortController():null;
+                      currentSearchController=controller;
+                      fetch('/api/search?q='+encodeURIComponent(q)+'&t='+Date.now(),{
+                        cache:'no-store',
+                        signal:controller?controller.signal:undefined
+                      })
                         .then(function(r){return r.json()})
                         .then(function(items){
+                          if(requestId!==activeSearchSeq||input.value.trim()!==q){return}
+                          if(currentSearchController===controller){currentSearchController=null}
                           spinner.style.display='none';
                           if(!items||items.length===0){empty.style.display='block';mirror(q,[]);return}
                           list.innerHTML=items.map(function(it){
@@ -359,7 +386,15 @@ class LinkCastManager(
                           }).join('');
                           mirror(q, items);
                         })
-                        .catch(function(){spinner.style.display='none';empty.style.display='block'});
+                        .catch(function(error){
+                          if(error&&error.name==='AbortError'){return}
+                          if(requestId!==activeSearchSeq||input.value.trim()!==q){return}
+                          if(currentSearchController===controller){currentSearchController=null}
+                          spinner.style.display='none';
+                          list.innerHTML='';
+                          empty.style.display='block';
+                          mirror(q, []);
+                        });
                     }
                     function send(id,title){
                       var fd=new FormData();fd.append('id',id);
