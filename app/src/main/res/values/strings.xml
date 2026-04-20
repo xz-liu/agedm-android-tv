@@ -31,6 +31,7 @@
     <string name="settings_section_playback">播放</string>
     <string name="settings_section_source">播放源</string>
     <string name="settings_section_app">应用</string>
+    <string name="btn_my">我的</string>
     <string name="settings_source_hint">AGE 固定为第一优先级，外部源顺序可调整。</string>
     <string name="settings_update_button">重新安装最新版本</string>
     <string name="settings_update_hint">直接打开 GitHub 上的最新 APK 安装包。</string>

@@ -42,6 +42,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.autoNextSettingButton.setOnClickListener { toggleAutoNext() }
         binding.skipIntroSettingButton.setOnClickListener { openSkipIntroSelector() }
         binding.sourceOrderSettingButton.setOnClickListener { openSourceOrderSelector() }
+        binding.bangumiLoginSettingButton.setOnClickListener { openBangumiAccount() }
         binding.updateSettingButton.setOnClickListener { openLatestApk() }
         binding.clearCacheSettingButton.setOnClickListener { confirmClearCache() }
         binding.clearHistorySettingButton.setOnClickListener { confirmClearHistory() }
@@ -52,11 +53,18 @@ class SettingsActivity : AppCompatActivity() {
         val autoNextEnabled = app.playbackStore.isAutoNextEnabled()
         val sourceOrder = app.playbackStore.getSourcePriority()
         val skipIntroMs = app.playbackStore.getSkipIntroDurationMs()
+        val bangumiAccount = app.bangumiAccountService.currentAccount()
 
         binding.speedValueText.text = "${formatSpeed(speed)}x"
         binding.autoNextValueText.text = if (autoNextEnabled) "开" else "关"
         binding.skipIntroValueText.text = formatSkipDuration(skipIntroMs)
         binding.sourceOrderValueText.text = formatSourceOrder(sourceOrder)
+        binding.bangumiLoginValueText.text = bangumiAccount?.displayName?.ifBlank { bangumiAccount.username } ?: "未登录"
+        binding.bangumiLoginHintText.text = if (bangumiAccount == null) {
+            "扫码后在手机上输入用户名、密码和验证码。"
+        } else {
+            "当前账号：${bangumiAccount.username}。可重新扫码切换，或直接退出。"
+        }
         lifecycleScope.launch {
             val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }
             binding.cacheSizeText.text = formatBytes(bytes)
@@ -118,6 +126,28 @@ class SettingsActivity : AppCompatActivity() {
                 renderSettings()
                 dialog.dismiss()
             }
+            .show()
+    }
+
+    private fun openBangumiAccount() {
+        val account = app.bangumiAccountService.currentAccount()
+        if (account == null) {
+            startActivity(BangumiLoginActivity.createIntent(this))
+            return
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Bangumi 账户")
+            .setMessage("当前已登录：${account.displayName.ifBlank { account.username }}")
+            .setPositiveButton("重新扫码登录") { _, _ ->
+                startActivity(BangumiLoginActivity.createIntent(this))
+            }
+            .setNeutralButton("退出登录") { _, _ ->
+                app.bangumiAccountService.logout()
+                renderSettings()
+                Toast.makeText(this, "已退出 Bangumi 账号", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
             .show()
     }
 

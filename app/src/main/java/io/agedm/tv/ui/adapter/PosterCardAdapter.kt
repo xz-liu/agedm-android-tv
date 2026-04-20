@@ -18,6 +18,9 @@ class PosterCardAdapter(
 ) : RecyclerView.Adapter<PosterCardAdapter.PosterViewHolder>() {
 
     var onLongClick: ((AnimeCard) -> Unit)? = null
+    var onSelectionToggle: ((AnimeCard) -> Unit)? = null
+    var selectionMode: Boolean = false
+    var selectedIds: Set<Long> = emptySet()
 
     private var items: List<AnimeCard> = emptyList()
     private val scoreCache = mutableMapOf<Long, String>()
@@ -58,7 +61,16 @@ class PosterCardAdapter(
             binding.badgeText.visibility =
                 if (item.badge.isBlank()) View.GONE else View.VISIBLE
             bindScore(item)
-            binding.cardRoot.setOnClickListener { onSelected(item) }
+            val selected = item.animeId in selectedIds
+            binding.selectionScrim.visibility = if (selectionMode && selected) View.VISIBLE else View.GONE
+            binding.selectionText.visibility = if (selectionMode && selected) View.VISIBLE else View.GONE
+            binding.cardRoot.setOnClickListener {
+                if (selectionMode && onSelectionToggle != null) {
+                    onSelectionToggle?.invoke(item)
+                } else {
+                    onSelected(item)
+                }
+            }
             val longClickHandler = onLongClick
             if (longClickHandler != null) {
                 binding.cardRoot.setOnLongClickListener { longClickHandler(item); true }

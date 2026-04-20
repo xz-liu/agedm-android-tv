@@ -31,6 +31,7 @@ import io.agedm.tv.R
 import io.agedm.tv.data.AgeLinks
 import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AnimeCard
+import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.data.BrowseSection
 import io.agedm.tv.data.CatalogQuery
 import io.agedm.tv.data.MirrorState
@@ -97,6 +98,9 @@ class MainActivity : AppCompatActivity() {
     private var lastNavUpPressUptimeMs: Long = 0L
     private var slideFromRight = true
     private var pendingFocusRestoreViewId: Int? = null
+    private var selectionMode = false
+    private var currentVisibleCards: List<AnimeCard> = emptyList()
+    private val selectedAnimeIds = linkedSetOf<Long>()
     private val navButtons: List<Button>
         get() = listOf(
             binding.navCastButton,
@@ -133,6 +137,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        updateHistoryNavLabel()
         if (currentScreen == Screen.HISTORY) {
             loadHistory()
         }
@@ -168,6 +173,8 @@ class MainActivity : AppCompatActivity() {
         sectionAdapter = BrowseSectionAdapter(::openDetail)
         gridAdapter = PosterCardAdapter(::openDetail)
         mirrorAdapter = PosterCardAdapter(::openDetail)
+        sectionAdapter.onSelectionToggle = ::toggleCardSelection
+        gridAdapter.onSelectionToggle = ::toggleCardSelection
         binding.contentRecycler.itemAnimator = null
         binding.contentRecycler.layoutManager = LinearLayoutManager(this)
         binding.contentRecycler.adapter = sectionAdapter
@@ -323,7 +330,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openScreen(screen: Screen, page: Int = 1) {
         clearNavFocusSwitchArm()
-        if (screen != Screen.HISTORY) gridAdapter.onLongClick = null
+        exitSelectionMode(silent = true)
         slideFromRight = when {
             page != currentPage -> page > currentPage
             else -> screen.navIndex() >= currentScreen.navIndex()
@@ -469,6 +476,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHistory() {
+        if (app.bangumiAccountService.isLoggedIn()) {
+            loadMyPage()
+            return
+        }
+        loadLocalHistory()
+    }
+
+    private fun loadLocalHistory() {
         gridAdapter.onLongClick = { card ->
             MaterialAlertDialogBuilder(this)
                 .setTitle("删除记录")
@@ -488,6 +503,50 @@ class MainActivity : AppCompatActivity() {
         currentTotal = history.size
         currentPageSize = history.size.coerceAtLeast(1)
         showGrid(history, emptyMessage = "还没有播放记录")
+        gridAdapter.onLongClick = { card ->
+            MaterialAlertDialogBuilder(this)
+                .setTitle("删除记录")
+                .setMessage("删除「${card.title}」的观看记录？")
+                .setPositiveButton("删除") { _, _ ->
+                    app.playbackStore.deleteRecord(card.animeId)
+                    loadHistory()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+        gridAdapter.notifyDataSetChanged()
+    }
+
+    private fun loadMyPage() {
+        renderLoading("正在加载我的 Bangumi...")
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        val requestId = replaceLoadRequest()
+        loadJob = lifecycleScope.launch {
+            runCatching { app.bangumiAccountService.fetchMyPage() }
+                .onSuccess { page ->
+                    if (!shouldHandleLoadResult(requestId)) return@launch
+                    val localHistory = app.playbackStore.getRecentRecords(12).map(::recordToCard)
+                    val sections = buildList {
+                        page?.sections?.let(::addAll)
+                        if (localHistory.isNotEmpty()) {
+                            add(BrowseSection("本地继续观看", "电视端播放记录", localHistory))
+                        }
+                    }
+                    currentTotal = sections.sumOf { it.items.size }
+                    currentPageSize = currentTotal.coerceAtLeast(1)
+                    showSections(
+                        sections = sections,
+                        emptyMessage = if (page == null) "Bangumi 个人页暂时不可用" else "还没有可展示的收藏内容",
+                    )
+                    if (page == null && sections.isNotEmpty()) {
+                        showOverlayMessage("Bangumi 个人页加载失败，已回退到本地记录")
+                    }
+                }
+                .onFailure { error ->
+                    handleLoadFailure(requestId, "我的页面加载失败", error)
+                }
+        }
     }
 
     private fun loadSearch(page: Int) {
@@ -563,6 +622,8 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
         binding.contentRecycler.layoutManager = LinearLayoutManager(this)
         binding.contentRecycler.adapter = sectionAdapter
+        currentVisibleCards = sections.flatMap { it.items }.distinctBy { it.animeId }
+        configureBrowseSelection()
         sectionAdapter.submitList(sections)
         binding.emptyStateText.isVisible = sections.isEmpty()
         binding.emptyStateText.text = emptyMessage
@@ -576,6 +637,8 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
         binding.contentRecycler.layoutManager = GridLayoutManager(this, 6)
         binding.contentRecycler.adapter = gridAdapter
+        currentVisibleCards = items
+        configureBrowseSelection()
         gridAdapter.submitList(items)
         binding.emptyStateText.isVisible = items.isEmpty()
         binding.emptyStateText.text = emptyMessage
@@ -670,6 +733,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateBottomNav() {
+        updateHistoryNavLabel()
         binding.navCastButton.isSelected = currentScreen == Screen.CAST
         binding.navHomeButton.isSelected = currentScreen == Screen.HOME
         binding.navCatalogButton.isSelected = currentScreen == Screen.CATALOG
@@ -1026,6 +1090,10 @@ class MainActivity : AppCompatActivity() {
     private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun navigateBack() {
+        if (selectionMode) {
+            exitSelectionMode()
+            return
+        }
         when (currentScreen) {
             Screen.HOME -> finish()
             Screen.SEARCH -> openScreen(Screen.HOME)
@@ -1075,6 +1143,95 @@ class MainActivity : AppCompatActivity() {
             delay(2500)
             binding.overlayMessage.visibility = View.GONE
         }
+    }
+
+    private fun updateHistoryNavLabel() {
+        binding.navHistoryButton.text = if (app.bangumiAccountService.isLoggedIn()) {
+            getString(R.string.btn_my)
+        } else {
+            getString(R.string.btn_history)
+        }
+    }
+
+    private fun configureBrowseSelection() {
+        val enabled = canUseBatchSelection()
+        val longClickHandler = if (enabled) {
+            { card: AnimeCard -> handleBatchSelectionLongClick(card) }
+        } else {
+            null
+        }
+        val selected = if (enabled && selectionMode) selectedAnimeIds.toSet() else emptySet()
+        gridAdapter.onLongClick = longClickHandler
+        gridAdapter.selectionMode = enabled && selectionMode
+        gridAdapter.selectedIds = selected
+        sectionAdapter.onLongClick = longClickHandler
+        sectionAdapter.selectionMode = enabled && selectionMode
+        sectionAdapter.selectedIds = selected
+        gridAdapter.notifyDataSetChanged()
+        sectionAdapter.notifyDataSetChanged()
+    }
+
+    private fun canUseBatchSelection(): Boolean {
+        return app.bangumiAccountService.isLoggedIn() &&
+            currentScreen != Screen.CAST &&
+            currentScreen != Screen.HISTORY
+    }
+
+    private fun handleBatchSelectionLongClick(card: AnimeCard) {
+        if (!selectionMode) {
+            selectionMode = true
+            selectedAnimeIds.clear()
+            selectedAnimeIds += card.animeId
+            configureBrowseSelection()
+            showOverlayMessage("多选模式：按 OK 勾选，长按执行批量标记，返回退出")
+            return
+        }
+        selectedAnimeIds += card.animeId
+        configureBrowseSelection()
+        showBatchStatusDialog()
+    }
+
+    private fun toggleCardSelection(card: AnimeCard) {
+        if (!selectionMode) {
+            openDetail(card)
+            return
+        }
+        if (!selectedAnimeIds.add(card.animeId)) {
+            selectedAnimeIds.remove(card.animeId)
+        }
+        if (selectedAnimeIds.isEmpty()) {
+            exitSelectionMode(silent = true)
+        } else {
+            configureBrowseSelection()
+        }
+    }
+
+    private fun exitSelectionMode(silent: Boolean = false) {
+        if (!selectionMode && selectedAnimeIds.isEmpty()) return
+        selectionMode = false
+        selectedAnimeIds.clear()
+        configureBrowseSelection()
+        if (!silent) {
+            showOverlayMessage("已退出多选模式")
+        }
+    }
+
+    private fun showBatchStatusDialog() {
+        val cards = currentVisibleCards.filter { it.animeId in selectedAnimeIds }
+        if (cards.isEmpty()) {
+            exitSelectionMode(silent = true)
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("批量标记 ${cards.size} 项")
+            .setItems(arrayOf("标记看过", "标记抛弃")) { _, which ->
+                val status = if (which == 0) BangumiCollectionStatus.COLLECT else BangumiCollectionStatus.DROPPED
+                app.bangumiAccountService.enqueueBatchStatusUpdate(cards, status)
+                exitSelectionMode(silent = true)
+                showOverlayMessage("已加入 Bangumi 同步队列：${cards.size} 项")
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun recordToCard(record: PlaybackRecord): AnimeCard {

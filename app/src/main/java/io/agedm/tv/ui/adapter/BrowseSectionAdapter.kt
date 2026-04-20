@@ -12,6 +12,11 @@ class BrowseSectionAdapter(
     private val onSelected: (AnimeCard) -> Unit,
 ) : RecyclerView.Adapter<BrowseSectionAdapter.SectionViewHolder>() {
 
+    var onLongClick: ((AnimeCard) -> Unit)? = null
+    var onSelectionToggle: ((AnimeCard) -> Unit)? = null
+    var selectionMode: Boolean = false
+    var selectedIds: Set<Long> = emptySet()
+
     private var items: List<BrowseSection> = emptyList()
 
     fun submitList(sections: List<BrowseSection>) {
@@ -25,7 +30,13 @@ class BrowseSectionAdapter(
     }
 
     override fun onBindViewHolder(holder: SectionViewHolder, position: Int) {
-        holder.bind(items[position])
+        holder.bind(
+            item = items[position],
+            onLongClick = onLongClick,
+            onSelectionToggle = onSelectionToggle,
+            selectionMode = selectionMode,
+            selectedIds = selectedIds,
+        )
     }
 
     override fun getItemCount(): Int = items.size
@@ -44,11 +55,21 @@ class BrowseSectionAdapter(
             binding.itemsRecycler.itemAnimator = null
         }
 
-        fun bind(item: BrowseSection) {
+        fun bind(
+            item: BrowseSection,
+            onLongClick: ((AnimeCard) -> Unit)?,
+            onSelectionToggle: ((AnimeCard) -> Unit)?,
+            selectionMode: Boolean,
+            selectedIds: Set<Long>,
+        ) {
             binding.sectionTitle.text = item.title
             binding.sectionSubtitle.text = item.subtitle
             binding.sectionSubtitle.visibility =
                 if (item.subtitle.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
+            posterAdapter.onLongClick = onLongClick
+            posterAdapter.onSelectionToggle = onSelectionToggle
+            posterAdapter.selectionMode = selectionMode
+            posterAdapter.selectedIds = selectedIds
             posterAdapter.submitList(item.items)
         }
     }

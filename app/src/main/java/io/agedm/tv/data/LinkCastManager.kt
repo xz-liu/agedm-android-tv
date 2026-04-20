@@ -1,6 +1,7 @@
 package io.agedm.tv.data
 
 import fi.iki.elonen.NanoHTTPD
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -25,7 +26,10 @@ data class MirrorItem(
     val cover: String = "",
 )
 
-class LinkCastManager(private val repository: AgeRepository) {
+class LinkCastManager(
+    private val repository: AgeRepository,
+    private val bangumiAccountService: BangumiAccountService,
+) {
     private var server: LinkCastHttpServer? = null
     private var serverUrl: String? = null
 
@@ -57,7 +61,13 @@ class LinkCastManager(private val repository: AgeRepository) {
 
         for (port in 8383..8390) {
             try {
-                val candidate = LinkCastHttpServer(port, ::handleIncomingRoute, ::handleMirrorUpdate, repository)
+                val candidate = LinkCastHttpServer(
+                    port = port,
+                    onRoute = ::handleIncomingRoute,
+                    onMirrorUpdate = ::handleMirrorUpdate,
+                    repository = repository,
+                    bangumiAccountService = bangumiAccountService,
+                )
                 candidate.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 server = candidate
                 serverUrl = "http://$localIp:$port/"
@@ -100,15 +110,99 @@ class LinkCastManager(private val repository: AgeRepository) {
         private val onRoute: (AgeRoute) -> Unit,
         private val onMirrorUpdate: (MirrorState) -> Unit,
         private val repository: AgeRepository,
+        private val bangumiAccountService: BangumiAccountService,
     ) : NanoHTTPD(port) {
 
         override fun serve(session: IHTTPSession): Response {
             return when {
                 session.method == Method.GET && session.uri == "/" -> html(rootPage())
+                session.method == Method.GET && session.uri == "/bgm/login" -> handleBangumiLoginPage()
+                session.method == Method.GET && session.uri == "/bgm/captcha" -> handleBangumiCaptcha(session)
                 session.method == Method.GET && session.uri == "/api/search" -> handleSearch(session)
+                session.method == Method.POST && session.uri == "/api/bgm/login" -> handleBangumiLoginSubmit(session)
                 session.method == Method.POST && session.uri == "/api/mirror" -> handleMirror(session)
                 session.method == Method.POST && session.uri == "/submit" -> handleSubmit(session)
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
+            }
+        }
+
+        private fun handleBangumiLoginPage(): Response {
+            return try {
+                val loginPage = runBlocking { bangumiAccountService.prepareLoginPage() }
+                html(bangumiLoginPage(loginPage.sessionId))
+            } catch (error: Throwable) {
+                html(
+                    """
+                    <!doctype html>
+                    <html lang="zh-CN">
+                    <meta charset="utf-8"/>
+                    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+                    <body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#08131f;color:#f5f7fa;padding:24px">
+                      <h2>Bangumi 登录页暂时不可用</h2>
+                      <p>${escapeHtml(error.message.orEmpty().ifBlank { "请稍后重试" })}</p>
+                    </body>
+                    </html>
+                    """.trimIndent(),
+                    Response.Status.INTERNAL_ERROR,
+                )
+            }
+        }
+
+        private fun handleBangumiCaptcha(session: IHTTPSession): Response {
+            val sessionId = session.parameters["sid"]?.firstOrNull().orEmpty()
+            if (sessionId.isBlank()) {
+                return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing sid")
+            }
+            return try {
+                val response = runBlocking { bangumiAccountService.loadCaptcha(sessionId) }
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    response.contentType.ifBlank { "image/png" },
+                    ByteArrayInputStream(response.bytes),
+                    response.bytes.size.toLong(),
+                )
+            } catch (_: Throwable) {
+                newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Captcha Load Failed")
+            }
+        }
+
+        private fun handleBangumiLoginSubmit(session: IHTTPSession): Response {
+            val files = HashMap<String, String>()
+            return try {
+                session.parseBody(files)
+                val sid = session.parameters["sid"]?.firstOrNull().orEmpty()
+                val username = session.parameters["username"]?.firstOrNull().orEmpty()
+                val password = session.parameters["password"]?.firstOrNull().orEmpty()
+                val captcha = session.parameters["captcha"]?.firstOrNull().orEmpty()
+                val result = runBlocking {
+                    bangumiAccountService.submitLogin(
+                        sessionId = sid,
+                        username = username,
+                        password = password,
+                        captcha = captcha,
+                    )
+                }
+                val body = buildString {
+                    append("{\"ok\":")
+                    append(if (result.success) "true" else "false")
+                    append(",\"message\":\"")
+                    append(escapeJson(result.message))
+                    append("\"")
+                    result.account?.let { account ->
+                        append(",\"username\":\"")
+                        append(escapeJson(account.username))
+                        append("\",\"displayName\":\"")
+                        append(escapeJson(account.displayName))
+                        append("\"")
+                    }
+                    append("}")
+                }
+                json(body, if (result.success) Response.Status.OK else Response.Status.BAD_REQUEST)
+            } catch (error: Throwable) {
+                json(
+                    "{\"ok\":false,\"message\":\"${escapeJson(error.message.orEmpty().ifBlank { "登录失败" })}\"}",
+                    Response.Status.INTERNAL_ERROR,
+                )
             }
         }
 
@@ -291,6 +385,95 @@ class LinkCastManager(private val repository: AgeRepository) {
             """.trimIndent()
         }
 
+        private fun bangumiLoginPage(sessionId: String): String {
+            return """
+                <!doctype html>
+                <html lang="zh-CN">
+                <head>
+                  <meta charset="utf-8"/>
+                  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+                  <title>Bangumi 登录</title>
+                  <style>
+                    *{box-sizing:border-box}
+                    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#08131f;color:#f5f7fa;min-height:100vh;padding:18px}
+                    .card{max-width:480px;margin:0 auto;background:#0f2236;border:1px solid #1b3549;border-radius:18px;padding:18px}
+                    h1{margin:0 0 10px;font-size:22px;color:#6ed9b8}
+                    p{margin:0 0 14px;color:#9bb7ca;line-height:1.5}
+                    label{display:block;margin:14px 0 6px;font-size:14px;color:#d6e4ee}
+                    input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid #355a77;background:#08131f;color:#fff;font-size:16px}
+                    input:focus{outline:none;border-color:#6ed9b8}
+                    .captcha-row{display:flex;gap:10px;align-items:center}
+                    .captcha-row img{width:128px;height:48px;border-radius:10px;background:#fff;object-fit:cover}
+                    .captcha-row button{flex-shrink:0}
+                    button{width:100%;margin-top:18px;padding:13px 16px;border:0;border-radius:12px;background:#6ed9b8;color:#052016;font-size:16px;font-weight:700}
+                    button.secondary{width:auto;margin-top:0;padding:10px 12px;background:#173149;color:#d6e4ee}
+                    #result{margin-top:14px;line-height:1.5}
+                    .ok{color:#6ed9b8}
+                    .err{color:#ff8585}
+                  </style>
+                </head>
+                <body>
+                  <div class="card">
+                    <h1>登录 Bangumi</h1>
+                    <p>输入用户名、密码和验证码。登录成功后，电视端会自动同步收藏状态。</p>
+                    <input type="hidden" id="sid" value="${escapeHtml(sessionId)}"/>
+                    <label for="username">用户名 / Email</label>
+                    <input id="username" autocomplete="username"/>
+                    <label for="password">密码</label>
+                    <input id="password" type="password" autocomplete="current-password"/>
+                    <label for="captcha">验证码</label>
+                    <div class="captcha-row">
+                      <input id="captcha" autocomplete="one-time-code" placeholder="输入图中验证码"/>
+                      <img id="captchaImg" alt="captcha" src="/bgm/captcha?sid=${escapeHtml(sessionId)}&t=${System.currentTimeMillis()}"/>
+                      <button type="button" class="secondary" onclick="refreshCaptcha()">刷新</button>
+                    </div>
+                    <button type="button" onclick="submitLogin()">登录到电视</button>
+                    <div id="result"></div>
+                  </div>
+                  <script>
+                    function refreshCaptcha(){
+                      var sid=document.getElementById('sid').value;
+                      document.getElementById('captchaImg').src='/bgm/captcha?sid='+encodeURIComponent(sid)+'&t='+Date.now();
+                    }
+                    function setResult(msg, ok){
+                      var el=document.getElementById('result');
+                      el.className=ok?'ok':'err';
+                      el.textContent=msg;
+                    }
+                    function submitLogin(){
+                      var sid=document.getElementById('sid').value;
+                      var username=document.getElementById('username').value.trim();
+                      var password=document.getElementById('password').value;
+                      var captcha=document.getElementById('captcha').value.trim();
+                      if(!username||!password||!captcha){setResult('请完整填写用户名、密码和验证码',false);return;}
+                      var fd=new FormData();
+                      fd.append('sid',sid);
+                      fd.append('username',username);
+                      fd.append('password',password);
+                      fd.append('captcha',captcha);
+                      setResult('正在登录...', true);
+                      fetch('/api/bgm/login',{method:'POST',body:fd})
+                        .then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data};});})
+                        .then(function(payload){
+                          if(payload.ok&&payload.data&&payload.data.ok){
+                            var name=payload.data.displayName||payload.data.username||'';
+                            setResult('登录成功：'+name+'。现在可以回到电视继续操作。',true);
+                          }else{
+                            setResult((payload.data&&payload.data.message)||'登录失败，请重试',false);
+                            refreshCaptcha();
+                          }
+                        })
+                        .catch(function(){
+                          setResult('登录失败，请检查网络后重试',false);
+                          refreshCaptcha();
+                        });
+                    }
+                  </script>
+                </body>
+                </html>
+            """.trimIndent()
+        }
+
         private fun html(body: String, status: Response.Status = Response.Status.OK): Response {
             return newFixedLengthResponse(status, "text/html; charset=utf-8", body)
         }
@@ -302,6 +485,14 @@ class LinkCastManager(private val repository: AgeRepository) {
         private fun escapeJson(text: String): String {
             return text.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "\\r")
+        }
+
+        private fun escapeHtml(text: String): String {
+            return text
+                .replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
         }
     }
 }

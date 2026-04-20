@@ -166,6 +166,76 @@
                                 android:visibility="gone" />
                         </LinearLayout>
 
+                        <HorizontalScrollView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:scrollbars="none">
+
+                            <LinearLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal">
+
+                                <Button
+                                    android:id="@+id/bangumiWishButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="42dp"
+                                    android:background="@drawable/bg_focusable_small"
+                                    android:text="想看"
+                                    android:textColor="@color/age_text"
+                                    android:textSize="13sp" />
+
+                                <Button
+                                    android:id="@+id/bangumiDoingButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="42dp"
+                                    android:layout_marginStart="8dp"
+                                    android:background="@drawable/bg_focusable_small"
+                                    android:text="在看"
+                                    android:textColor="@color/age_text"
+                                    android:textSize="13sp" />
+
+                                <Button
+                                    android:id="@+id/bangumiCollectButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="42dp"
+                                    android:layout_marginStart="8dp"
+                                    android:background="@drawable/bg_focusable_small"
+                                    android:text="看过"
+                                    android:textColor="@color/age_text"
+                                    android:textSize="13sp" />
+
+                                <Button
+                                    android:id="@+id/bangumiOnHoldButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="42dp"
+                                    android:layout_marginStart="8dp"
+                                    android:background="@drawable/bg_focusable_small"
+                                    android:text="搁置"
+                                    android:textColor="@color/age_text"
+                                    android:textSize="13sp" />
+
+                                <Button
+                                    android:id="@+id/bangumiDroppedButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="42dp"
+                                    android:layout_marginStart="8dp"
+                                    android:background="@drawable/bg_focusable_small"
+                                    android:text="抛弃"
+                                    android:textColor="@color/age_text"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+                        </HorizontalScrollView>
+
+                        <TextView
+                            android:id="@+id/bangumiCollectionHintText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:textColor="@color/age_text_muted"
+                            android:textSize="13sp" />
+
                         <TextView
                             android:id="@+id/introText"
                             android:layout_width="match_parent"

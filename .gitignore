@@ -14,3 +14,5 @@ app/agedm-release.jks
 # Checked-in fallback APKs for GitHub release uploads
 !release-assets/
 !release-assets/*.apk
+
+.env

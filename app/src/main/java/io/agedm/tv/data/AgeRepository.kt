@@ -179,6 +179,13 @@ class AgeRepository(
         bangumiService?.fetchScore(animeId, title)
     }
 
+    suspend fun alignBangumiTitlesToAge(
+        titles: List<String>,
+        excludeAnimeId: Long = 0L,
+    ): AgeRelatedItem? = withContext(Dispatchers.IO) {
+        alignBangumiSubjectToAge(titles, excludeAnimeId)
+    }
+
     suspend fun peekHomeFeed(): HomeFeed? = withContext(Dispatchers.IO) {
         peekCached(homeCacheKey(), ::decodeHomeFeed)
     }

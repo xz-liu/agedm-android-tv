@@ -21,6 +21,7 @@ import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AgeRelatedItem
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.AnimeDetail
+import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.data.BangumiComment
 import io.agedm.tv.data.BangumiMetadata
 import io.agedm.tv.data.EpisodeItem
@@ -58,6 +59,8 @@ class DetailActivity : AppCompatActivity() {
     private var supplementalSourceLoading = false
     private var sourceRefreshLoading = false
     private var sourceMatchDialogLoading = false
+    private var bangumiCollectionStatus: BangumiCollectionStatus? = null
+    private var bangumiCollectionLoading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,6 +77,7 @@ class DetailActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         app.linkCastManager.consumePendingRoute()?.let(::handleIncomingRoute)
+        detail?.let(::refreshBangumiCollectionState)
     }
 
     private fun setupLists() {
@@ -144,6 +148,11 @@ class DetailActivity : AppCompatActivity() {
         }
         binding.refreshSourcesButton.setOnClickListener { refreshSources() }
         binding.continueButton.isVisible = false
+        binding.bangumiWishButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.WISH) }
+        binding.bangumiDoingButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.DO) }
+        binding.bangumiCollectButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.COLLECT) }
+        binding.bangumiOnHoldButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.ON_HOLD) }
+        binding.bangumiDroppedButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.DROPPED) }
     }
 
     private fun setupBackBehavior() {
@@ -219,6 +228,10 @@ class DetailActivity : AppCompatActivity() {
         binding.introText.text = htmlToPlainText(loadedDetail.introHtml).ifBlank { "暂无简介" }
         binding.coverImage.loadPosterImage(loadedDetail.cover)
         bindBangumiPanel(loadedDetail.bangumi)
+        bangumiCollectionStatus = app.bangumiAccountService.cachedCollectionStatus(loadedDetail.animeId)
+        bangumiCollectionLoading = false
+        renderBangumiCollectionState()
+        refreshBangumiCollectionState(loadedDetail)
 
         val record = app.playbackStore.getRecord(loadedDetail.animeId)
         val resolvedSourceKey = preferredSourceKey ?: record?.sourceKey ?: loadedDetail.sources.firstOrNull()?.key
@@ -245,6 +258,67 @@ class DetailActivity : AppCompatActivity() {
         if (requestFocus) {
             binding.playButton.requestFocus()
         }
+    }
+
+    private fun refreshBangumiCollectionState(loadedDetail: AnimeDetail) {
+        if (!app.bangumiAccountService.isLoggedIn()) {
+            bangumiCollectionLoading = false
+            renderBangumiCollectionState()
+            return
+        }
+        bangumiCollectionLoading = true
+        renderBangumiCollectionState()
+        lifecycleScope.launch {
+            val status = runCatching {
+                app.bangumiAccountService.fetchCollectionStatus(loadedDetail.animeId, loadedDetail.title)
+            }.getOrNull()
+            if (detail?.animeId != loadedDetail.animeId) return@launch
+            bangumiCollectionLoading = false
+            if (status != null) {
+                bangumiCollectionStatus = status
+            }
+            renderBangumiCollectionState()
+        }
+    }
+
+    private fun selectBangumiCollectionStatus(status: BangumiCollectionStatus) {
+        val loadedDetail = detail ?: return
+        if (!app.bangumiAccountService.isLoggedIn()) {
+            Toast.makeText(this, "请先在设置中登录 Bangumi 账号", Toast.LENGTH_SHORT).show()
+            return
+        }
+        bangumiCollectionStatus = status
+        renderBangumiCollectionState()
+        app.bangumiAccountService.enqueueManualStatusUpdate(
+            animeId = loadedDetail.animeId,
+            title = loadedDetail.title,
+            status = status,
+        )
+        Toast.makeText(this, "已加入 Bangumi 同步队列：${status.label}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun renderBangumiCollectionState() {
+        val current = bangumiCollectionStatus
+        val account = app.bangumiAccountService.currentAccount()
+        renderBangumiStatusButton(binding.bangumiWishButton, BangumiCollectionStatus.WISH, current)
+        renderBangumiStatusButton(binding.bangumiDoingButton, BangumiCollectionStatus.DO, current)
+        renderBangumiStatusButton(binding.bangumiCollectButton, BangumiCollectionStatus.COLLECT, current)
+        renderBangumiStatusButton(binding.bangumiOnHoldButton, BangumiCollectionStatus.ON_HOLD, current)
+        renderBangumiStatusButton(binding.bangumiDroppedButton, BangumiCollectionStatus.DROPPED, current)
+        binding.bangumiCollectionHintText.text = when {
+            account == null -> "登录 Bangumi 后可同步 想看 / 在看 / 看过 / 搁置 / 抛弃"
+            bangumiCollectionLoading -> "正在读取 Bangumi 收藏状态..."
+            current != null -> "Bangumi 当前状态：${current.label}"
+            else -> "Bangumi 当前还没有这部动画的收藏记录"
+        }
+    }
+
+    private fun renderBangumiStatusButton(
+        button: android.widget.Button,
+        status: BangumiCollectionStatus,
+        current: BangumiCollectionStatus?,
+    ) {
+        button.text = if (current == status) "✓ ${status.label}" else status.label
     }
 
     private fun bindSelectionPanels(

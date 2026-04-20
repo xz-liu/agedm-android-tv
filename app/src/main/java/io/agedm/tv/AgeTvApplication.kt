@@ -3,6 +3,8 @@ package io.agedm.tv
 import android.app.Application
 import android.graphics.Bitmap
 import io.agedm.tv.data.AgeRepository
+import io.agedm.tv.data.BangumiAccountService
+import io.agedm.tv.data.BangumiAccountStore
 import io.agedm.tv.data.ContentCache
 import io.agedm.tv.data.LinkCastManager
 import io.agedm.tv.data.PlaybackStore
@@ -26,6 +28,8 @@ class AgeTvApplication : Application() {
 
     val playbackStore: PlaybackStore by lazy { PlaybackStore(this) }
 
+    val bangumiAccountStore: BangumiAccountStore by lazy { BangumiAccountStore(this) }
+
     val contentCache: ContentCache by lazy {
         ContentCache(File(cacheDir, "content")).also { it.evictExpired() }
     }
@@ -37,5 +41,13 @@ class AgeTvApplication : Application() {
         )
     }
 
-    val linkCastManager: LinkCastManager by lazy { LinkCastManager(ageRepository) }
+    val bangumiAccountService: BangumiAccountService by lazy {
+        BangumiAccountService(
+            repository = ageRepository,
+            playbackStore = playbackStore,
+            store = bangumiAccountStore,
+        )
+    }
+
+    val linkCastManager: LinkCastManager by lazy { LinkCastManager(ageRepository, bangumiAccountService) }
 }

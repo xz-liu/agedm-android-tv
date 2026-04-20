@@ -49,6 +49,7 @@ import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
 import java.io.IOException
 import java.util.concurrent.CancellationException
+import kotlin.math.ceil
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -120,6 +121,8 @@ class PlayerActivity : AppCompatActivity() {
     private var parserRequest: ParserRequest? = null
     private var supplementalSourcesRequested = false
     private var supplementalSourceLoading = false
+    private var bangumiWatchingQueued = false
+    private var bangumiCollectedQueued = false
     private val attemptedSourceIndices = linkedSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -597,6 +600,7 @@ class PlayerActivity : AppCompatActivity() {
         deferredSeekMs = seekMs
         autoHideAfterReady = true
         hasPlaybackStarted = false
+        maybeQueueBangumiWatching(loadedDetail)
         player.stop()
 
         refreshDrawerLists()
@@ -1585,6 +1589,7 @@ class PlayerActivity : AppCompatActivity() {
             completed = completed,
         )
         app.playbackStore.saveRecord(record)
+        maybeQueueBangumiCollected(source, completed)
     }
 
     private fun onPlaybackEnded() {
@@ -1597,6 +1602,32 @@ class PlayerActivity : AppCompatActivity() {
             binding.loadingText.isVisible = true
             binding.loadingText.text = "当前分集已播放结束"
         }
+    }
+
+    private fun maybeQueueBangumiWatching(loadedDetail: AnimeDetail) {
+        if (bangumiWatchingQueued) return
+        bangumiWatchingQueued = true
+        app.bangumiAccountService.enqueuePlaybackStarted(
+            animeId = loadedDetail.animeId,
+            title = loadedDetail.title,
+        )
+    }
+
+    private fun maybeQueueBangumiCollected(source: EpisodeSource, completed: Boolean) {
+        if (bangumiCollectedQueued) return
+        val loadedDetail = detail ?: return
+        val totalEpisodes = source.episodes.size
+        if (totalEpisodes <= 0) return
+        val thresholdEpisode = ceil(totalEpisodes * 0.75).toInt().coerceAtLeast(1)
+        val episodeGatePassed = currentEpisodeIndex + 1 >= thresholdEpisode
+        val duration = player.duration.takeIf { it > 0L } ?: 0L
+        val progressGatePassed = completed || (duration > 0L && player.currentPosition >= duration * 0.9)
+        if (!episodeGatePassed || !progressGatePassed) return
+        bangumiCollectedQueued = true
+        app.bangumiAccountService.enqueuePlaybackCompleted(
+            animeId = loadedDetail.animeId,
+            title = loadedDetail.title,
+        )
     }
 
     private fun scrollEpisodeIntoView() {
