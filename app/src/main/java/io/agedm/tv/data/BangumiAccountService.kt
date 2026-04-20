@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.OkHttpClient
@@ -23,7 +24,7 @@ class BangumiAccountService(
     private val repository: AgeRepository,
     private val playbackStore: PlaybackStore,
     private val store: BangumiAccountStore,
-    private val client: OkHttpClient = OkHttpClient.Builder().followRedirects(true).followSslRedirects(true).build(),
+    private val client: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _account = MutableStateFlow(store.readSession())
@@ -55,7 +56,10 @@ class BangumiAccountService(
     }
 
     suspend fun prepareLoginPage(): BangumiLoginPage {
-        val response = executeTextRequest("https://bgm.tv/login")
+        val response = executeTextRequest(
+            url = LOGIN_URL,
+            referer = LOGIN_URL,
+        )
         val document = Jsoup.parse(response.body)
         val form = document.selectFirst("form[action*=FollowTheRabbit]")
             ?: throw IOException("Bangumi 登录页结构已变化")
@@ -74,15 +78,40 @@ class BangumiAccountService(
         return BangumiLoginPage(sessionId)
     }
 
-    suspend fun loadCaptcha(sessionId: String): BinaryResponse {
+    suspend fun loadCaptcha(
+        sessionId: String,
+        requestToken: Long = System.currentTimeMillis(),
+    ): BinaryResponse {
         val challenge = loginChallenges[sessionId] ?: throw IOException("登录会话已失效，请重新扫码")
         val nonce = "${System.currentTimeMillis()}${Random.nextInt(1, 7)}"
-        val response = executeBinaryRequest(
-            url = "https://bgm.tv/signup/captcha?$nonce",
+        val captchaResponse = executeBinaryRequest(
+            url = "$CAPTCHA_URL?$nonce",
             cookies = challenge.cookies,
+            referer = LOGIN_URL,
         )
-        challenge.cookies.putAll(response.cookies)
-        return response
+        val mergedCookies = challenge.cookies.toMutableMap().apply { putAll(captchaResponse.cookies) }
+        val loginResponse = executeTextRequest(
+            url = LOGIN_URL,
+            cookies = mergedCookies,
+            referer = LOGIN_URL,
+        )
+        val refreshedFields = parseLoginHiddenFields(loginResponse.body).takeIf { it.isNotEmpty() }
+            ?: challenge.hiddenFields
+        val refreshedChallenge = LoginChallenge(
+            sessionId = sessionId,
+            cookies = loginResponse.cookies.toMutableMap(),
+            hiddenFields = refreshedFields,
+            createdAtMs = System.currentTimeMillis(),
+            lastCaptchaToken = requestToken,
+        )
+        loginChallenges.compute(sessionId) { _, current ->
+            when {
+                current == null -> null
+                requestToken >= current.lastCaptchaToken -> refreshedChallenge
+                else -> current
+            }
+        }
+        return captchaResponse
     }
 
     suspend fun submitLogin(
@@ -108,16 +137,19 @@ class BangumiAccountService(
         fields.remove("cookietime")
 
         val loginResponse = executeTextRequest(
-            url = "https://bgm.tv/FollowTheRabbit",
+            url = FOLLOW_THE_RABBIT_URL,
             cookies = challenge.cookies,
             formFields = fields,
+            referer = LOGIN_URL,
+            origin = BASE_URL.removeSuffix("/"),
         )
         val cookies = challenge.cookies.toMutableMap().apply { putAll(loginResponse.cookies) }
         val directAccount = parseAccount(loginResponse.body, cookies)
         val homepage = if (directAccount == null) {
             executeTextRequest(
-                url = "https://bgm.tv/",
+                url = BASE_URL,
                 cookies = cookies,
+                referer = LOGIN_URL,
             )
         } else {
             null
@@ -131,13 +163,16 @@ class BangumiAccountService(
             syncExistingPlaybackRecords()
             BangumiLoginResult(true, "Bangumi 登录成功", account)
         } else {
+            val failureMessage = extractLoginFailureMessage(loginResponse.body)
+                ?: homepage?.body?.let(::extractLoginFailureMessage)
+                ?: "登录失败，请检查用户名、密码和验证码"
             loginChallenges[sessionId] = refreshChallenge(
                 sessionId = sessionId,
                 fallback = challenge,
                 cookies = cookies,
                 loginPageHtml = loginResponse.body,
             )
-            BangumiLoginResult(false, "登录失败，请检查用户名、密码和验证码")
+            BangumiLoginResult(false, failureMessage)
         }
     }
 
@@ -441,6 +476,14 @@ class BangumiAccountService(
         )
     }
 
+    private fun extractLoginFailureMessage(body: String): String? {
+        val document = Jsoup.parse(body)
+        return document.selectFirst("#colunmNotice .message .text, #columnNotice .message .text, .message .text")
+            ?.text()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
     private fun requireSessionCookies(): Map<String, String> {
         return _account.value?.cookies?.takeIf { it.isNotEmpty() }
             ?: throw IOException("Bangumi 账号尚未登录")
@@ -463,6 +506,7 @@ class BangumiAccountService(
             cookies = cookies.toMutableMap(),
             hiddenFields = fields,
             createdAtMs = System.currentTimeMillis(),
+            lastCaptchaToken = fallback.lastCaptchaToken,
         )
     }
 
@@ -497,55 +541,90 @@ class BangumiAccountService(
         url: String,
         cookies: Map<String, String> = emptyMap(),
         formFields: Map<String, String>? = null,
+        referer: String = BASE_URL,
+        origin: String? = null,
     ): TextResponse {
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Referer", "https://bgm.tv/")
-        if (cookies.isNotEmpty()) {
-            requestBuilder.header("Cookie", buildCookieHeader(cookies))
-        }
-        if (formFields != null) {
-            val body = FormBody.Builder().apply {
-                formFields.forEach { (key, value) -> add(key, value) }
-            }.build()
-            requestBuilder.post(body)
-        }
-        client.newCall(requestBuilder.build()).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw IOException("Bangumi 请求失败 ${response.code}")
+        val cookieJar = cookies.toMutableMap()
+        var currentUrl = url
+        var currentMethod = if (formFields != null) "POST" else "GET"
+        var currentFormFields = formFields
+        repeat(MAX_REDIRECTS) {
+            val requestBuilder = Request.Builder()
+                .url(currentUrl)
+                .header("User-Agent", USER_AGENT)
+                .header("Referer", referer)
+            if (cookieJar.isNotEmpty()) {
+                requestBuilder.header("Cookie", buildCookieHeader(cookieJar))
             }
-            return TextResponse(
-                body = body,
-                cookies = parseSetCookies(response.headers),
-                finalUrl = response.request.url.toString(),
-            )
+            if (currentMethod == "POST" && currentFormFields != null) {
+                origin?.let { requestBuilder.header("Origin", it) }
+                val requestFields = currentFormFields ?: emptyMap()
+                val body = FormBody.Builder().apply {
+                    requestFields.forEach { (key, value) -> add(key, value) }
+                }.build()
+                requestBuilder.post(body)
+            }
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                cookieJar.putAll(parseSetCookies(response.headers))
+                if (response.isRedirect) {
+                    val location = response.header("Location")
+                        ?: throw IOException("Bangumi 重定向缺少目标地址")
+                    currentUrl = absoluteUrl(response.request.url.toString(), location)
+                    if (response.code == 303 || response.code == 301 || response.code == 302) {
+                        currentMethod = "GET"
+                        currentFormFields = null
+                    }
+                    return@repeat
+                }
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IOException("Bangumi 请求失败 ${response.code}")
+                }
+                return TextResponse(
+                    body = body,
+                    cookies = cookieJar.toMap(),
+                    finalUrl = response.request.url.toString(),
+                )
+            }
         }
+        throw IOException("Bangumi 请求重定向次数过多")
     }
 
     private fun executeBinaryRequest(
         url: String,
         cookies: Map<String, String> = emptyMap(),
+        referer: String = LOGIN_URL,
     ): BinaryResponse {
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Referer", "https://bgm.tv/login")
-        if (cookies.isNotEmpty()) {
-            requestBuilder.header("Cookie", buildCookieHeader(cookies))
-        }
-        client.newCall(requestBuilder.build()).execute().use { response ->
-            val bytes = response.body?.bytes() ?: ByteArray(0)
-            if (!response.isSuccessful) {
-                throw IOException("验证码加载失败 ${response.code}")
+        val cookieJar = cookies.toMutableMap()
+        var currentUrl = url
+        repeat(MAX_REDIRECTS) {
+            val requestBuilder = Request.Builder()
+                .url(currentUrl)
+                .header("User-Agent", USER_AGENT)
+                .header("Referer", referer)
+            if (cookieJar.isNotEmpty()) {
+                requestBuilder.header("Cookie", buildCookieHeader(cookieJar))
             }
-            return BinaryResponse(
-                bytes = bytes,
-                contentType = response.header("Content-Type").orEmpty(),
-                cookies = parseSetCookies(response.headers),
-            )
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                cookieJar.putAll(parseSetCookies(response.headers))
+                if (response.isRedirect) {
+                    val location = response.header("Location")
+                        ?: throw IOException("验证码请求重定向缺少目标地址")
+                    currentUrl = absoluteUrl(response.request.url.toString(), location)
+                    return@repeat
+                }
+                val bytes = response.body?.bytes() ?: ByteArray(0)
+                if (!response.isSuccessful) {
+                    throw IOException("验证码加载失败 ${response.code}")
+                }
+                return BinaryResponse(
+                    bytes = bytes,
+                    contentType = response.header("Content-Type").orEmpty(),
+                    cookies = cookieJar.toMap(),
+                )
+            }
         }
+        throw IOException("验证码请求重定向次数过多")
     }
 
     private fun looksLikeExpiredSession(response: TextResponse): Boolean {
@@ -579,6 +658,7 @@ class BangumiAccountService(
     }
 
     private fun absoluteUrl(baseUrl: String, raw: String): String {
+        baseUrl.toHttpUrlOrNull()?.resolve(raw)?.toString()?.let { return it }
         return when {
             raw.startsWith("http://") || raw.startsWith("https://") -> raw
             raw.startsWith("/") -> baseUrl.trimEnd('/') + raw
@@ -591,6 +671,7 @@ class BangumiAccountService(
         val cookies: MutableMap<String, String>,
         val hiddenFields: Map<String, String>,
         val createdAtMs: Long,
+        val lastCaptchaToken: Long = 0L,
     )
 
     private data class TextResponse(
@@ -626,7 +707,12 @@ class BangumiAccountService(
     private class BangumiSessionExpiredException : IOException("Bangumi 登录状态已失效，请重新扫码")
 
     companion object {
+        private const val BASE_URL = "https://bgm.tv/"
+        private const val LOGIN_URL = "${BASE_URL}login"
+        private const val CAPTCHA_URL = "${BASE_URL}signup/captcha"
+        private const val FOLLOW_THE_RABBIT_URL = "${BASE_URL}FollowTheRabbit"
         private const val LOGIN_CHALLENGE_TTL_MS = 10 * 60_000L
+        private const val MAX_REDIRECTS = 6
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
     }

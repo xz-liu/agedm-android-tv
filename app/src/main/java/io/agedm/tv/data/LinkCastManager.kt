@@ -154,13 +154,22 @@ class LinkCastManager(
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing sid")
             }
             return try {
-                val response = runBlocking { bangumiAccountService.loadCaptcha(sessionId) }
+                val requestToken = session.parameters["t"]?.firstOrNull()?.toLongOrNull() ?: System.currentTimeMillis()
+                val response = runBlocking {
+                    bangumiAccountService.loadCaptcha(
+                        sessionId = sessionId,
+                        requestToken = requestToken,
+                    )
+                }
                 newFixedLengthResponse(
                     Response.Status.OK,
                     response.contentType.ifBlank { "image/png" },
                     ByteArrayInputStream(response.bytes),
                     response.bytes.size.toLong(),
-                )
+                ).apply {
+                    addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+                    addHeader("Pragma", "no-cache")
+                }
             } catch (_: Throwable) {
                 newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Captcha Load Failed")
             }
@@ -418,12 +427,12 @@ class LinkCastManager(
                     <p>输入用户名、密码和验证码。登录成功后，电视端会自动同步收藏状态。</p>
                     <input type="hidden" id="sid" value="${escapeHtml(sessionId)}"/>
                     <label for="username">用户名 / Email</label>
-                    <input id="username" autocomplete="username"/>
+                    <input id="username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false"/>
                     <label for="password">密码</label>
                     <input id="password" type="password" autocomplete="current-password"/>
                     <label for="captcha">验证码</label>
                     <div class="captcha-row">
-                      <input id="captcha" autocomplete="one-time-code" placeholder="输入图中验证码"/>
+                      <input id="captcha" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="latin" maxlength="5" pattern="[A-Za-z0-9]{5}" placeholder="输入 5 位数字/字母验证码"/>
                       <img id="captchaImg" alt="captcha" src="/bgm/captcha?sid=${escapeHtml(sessionId)}&t=${System.currentTimeMillis()}"/>
                       <button type="button" class="secondary" onclick="refreshCaptcha()">刷新</button>
                     </div>
@@ -446,6 +455,7 @@ class LinkCastManager(
                       var password=document.getElementById('password').value;
                       var captcha=document.getElementById('captcha').value.trim();
                       if(!username||!password||!captcha){setResult('请完整填写用户名、密码和验证码',false);return;}
+                      if(!/^[0-9A-Za-z]{5}$/.test(captcha)){setResult('验证码必须是 5 位数字或字母',false);return;}
                       var fd=new FormData();
                       fd.append('sid',sid);
                       fd.append('username',username);
