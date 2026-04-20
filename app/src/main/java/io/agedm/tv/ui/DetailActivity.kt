@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -234,10 +236,8 @@ class DetailActivity : AppCompatActivity() {
 
         binding.pageTitle.text = loadedDetail.title
         binding.titleText.text = loadedDetail.title
-        binding.metaText.text = listOf(loadedDetail.status, loadedDetail.tags)
-            .filter { it.isNotBlank() }
-            .joinToString(" · ")
-        binding.tagsText.text = buildTagsLine(loadedDetail)
+        binding.metaText.text = loadedDetail.status
+        buildTagPills(binding.tagsContainer, loadedDetail.tags.split(" ").filter { it.isNotBlank() })
         binding.introText.text = htmlToPlainText(loadedDetail.introHtml).ifBlank { "暂无简介" }
         binding.coverImage.loadPosterImage(loadedDetail.cover)
         bindBangumiPanel(loadedDetail.bangumi)
@@ -764,32 +764,32 @@ class DetailActivity : AppCompatActivity() {
     private fun bindBangumiPanel(metadata: BangumiMetadata?) {
         if (metadata == null) {
             binding.bangumiPanel.isVisible = false
+            binding.bangumiScoreSection.isVisible = false
             return
         }
 
         binding.bangumiPanel.isVisible = true
-        val summaryParts = buildList {
-            metadata.scoreLabel?.let { add("Bangumi $it") }
-            metadata.voteCount.takeIf { it > 0 }?.let { add("${it}人评分") }
-            metadata.rank?.let { add("#$it") }
+
+        val score = metadata.score
+        binding.bangumiScoreSection.isVisible = score != null
+        if (score != null) {
+            binding.bangumiScoreNumber.text = metadata.scoreLabel.orEmpty()
+            val voteParts = buildList {
+                metadata.voteCount.takeIf { it > 0 }?.let { add("${it}人评分") }
+                metadata.rank?.let { add("#${it}") }
+            }
+            binding.bangumiScoreVotes.text = voteParts.joinToString(" · ")
+            buildScoreDistBars(binding.bangumiScoreDistLayout, metadata.ratingCounts)
         }
-        binding.bangumiSummaryText.text = summaryParts.joinToString(" · ")
-            .ifBlank { getString(io.agedm.tv.R.string.bangumi_empty) }
 
-        binding.bangumiDistributionText.text = metadata.ratingCounts.entries
-            .sortedByDescending { it.key }
-            .joinToString("  ") { (score, count) -> "${score}分 $count" }
-            .ifBlank { "评分分布暂缺" }
-
-        binding.bangumiTagsText.text = metadata.tags
-            .joinToString(" · ") { tag -> "${tag.name} ${tag.count}" }
-            .ifBlank { "标签暂缺" }
+        val topTags = metadata.tags.sortedByDescending { it.count }.take(12).map { it.name }
+        buildTagPills(binding.bangumiTagsContainer, topTags)
 
         binding.bangumiStaffText.text = metadata.staff
             .joinToString("\n") { role ->
                 "${role.role} · ${role.names.joinToString("、")}"
             }
-            .ifBlank { "制作人员信息暂缺" }
+        binding.bangumiStaffText.isVisible = metadata.staff.isNotEmpty()
 
         bindBangumiComments(metadata.comments)
         bangumiSimilarAdapter.submitList(metadata.similar.map(::toCard))
@@ -834,12 +834,65 @@ class DetailActivity : AppCompatActivity() {
         return (value * resources.displayMetrics.density + 0.5f).toInt()
     }
 
-    private fun buildTagsLine(detail: AnimeDetail): String {
-        val tagText = detail.tags.replace(" ", " · ")
-        return if (tagText.isBlank()) {
-            "暂无标签"
-        } else {
-            tagText
+    private fun buildTagPills(container: LinearLayout, tags: List<String>) {
+        container.removeAllViews()
+        tags.filter { it.isNotBlank() }.forEach { tag ->
+            val pill = TextView(this).apply {
+                text = tag
+                setTextColor(getColor(io.agedm.tv.R.color.age_text))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setBackgroundResource(io.agedm.tv.R.drawable.bg_tag_pill)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                isFocusable = false
+                isFocusableInTouchMode = false
+            }
+            container.addView(pill, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = dp(6) })
+        }
+    }
+
+    private fun buildScoreDistBars(container: LinearLayout, ratingCounts: Map<Int, Int>) {
+        container.removeAllViews()
+        if (ratingCounts.isEmpty()) return
+        val maxCount = ratingCounts.values.maxOrNull() ?: return
+        val accentColor = getColor(io.agedm.tv.R.color.age_focus)
+        val trackColor = 0x1A355A77
+        val textMuted = getColor(io.agedm.tv.R.color.age_text_muted)
+        val barHeight = dp(3)
+
+        (10 downTo 1).forEach { score ->
+            val count = ratingCounts[score] ?: 0
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val label = TextView(this).apply {
+                text = score.toString()
+                setTextColor(textMuted)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                minWidth = dp(14)
+                gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            }
+            val barLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            val fillView = View(this).apply { setBackgroundColor(accentColor) }
+            barLayout.addView(fillView, LinearLayout.LayoutParams(0, barHeight, count.toFloat()))
+            val remaining = (maxCount - count).toFloat().coerceAtLeast(0f)
+            if (remaining > 0f) {
+                val trackView = View(this).apply { setBackgroundColor(trackColor) }
+                barLayout.addView(trackView, LinearLayout.LayoutParams(0, barHeight, remaining))
+            }
+            row.addView(label)
+            row.addView(barLayout, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(4)
+            })
+            container.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { if (score < 10) topMargin = dp(2) })
         }
     }
 
