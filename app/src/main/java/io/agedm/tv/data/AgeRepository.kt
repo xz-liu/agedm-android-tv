@@ -273,20 +273,23 @@ class AgeRepository(
 
     private fun decodeHomeFeed(body: String): HomeFeed {
         val response = json.decodeFromString<AgeHomeResponse>(body)
+        val latestCards = response.latest.map { it.toPosterCard() }
+        // Index by ID so schedule items can check whether they've actually aired today.
+        val latestById = latestCards.associateBy { it.animeId }
         val feed = HomeFeed(
-            latest = response.latest.map { it.toPosterCard() },
+            latest = latestCards,
             recommend = response.recommend.map { it.toPosterCard() },
             dailySections = response.weekList
                 .entries
                 .sortedBy { weekDaySort(it.key) }
                 .mapNotNull { (key, items) ->
-                    val mapped = items.map { it.toScheduleCard() }
+                    val mapped = items.map { it.toScheduleCard(latestById) }
                     if (mapped.isEmpty()) null
                     else BrowseSection(title = weekDayTitle(key), subtitle = "${mapped.size} 部作品", items = mapped)
                 },
         )
         touchDetailCaches(
-            feed.latest.map { it.animeId } +
+            latestCards.map { it.animeId } +
                 feed.recommend.map { it.animeId } +
                 feed.dailySections.flatMap { section -> section.items.map { it.animeId } },
         )
@@ -485,14 +488,42 @@ class AgeRepository(
         )
     }
 
-    private fun AgeScheduleItem.toScheduleCard(): AnimeCard {
-        return AnimeCard(
-            animeId = id,
-            title = name,
-            cover = buildCoverUrl(id),
-            badge = if (isNew > 0) "NEW" else "",
-            subtitle = nameForNew.ifBlank { mtime.substringAfter(' ', "") },
-        )
+    private fun AgeScheduleItem.toScheduleCard(latestById: Map<Long, AnimeCard>): AnimeCard {
+        val latestCard = latestById[id]
+        return if (latestCard != null) {
+            // Confirmed aired: show the episode label from the recent-updates feed.
+            AnimeCard(
+                animeId = id,
+                title = name,
+                cover = buildCoverUrl(id),
+                badge = latestCard.badge.ifBlank { "已更新" },
+                subtitle = "",
+            )
+        } else {
+            // Not yet aired: show scheduled local air time (converted from CST).
+            AnimeCard(
+                animeId = id,
+                title = name,
+                cover = buildCoverUrl(id),
+                badge = "",
+                subtitle = formatLocalAirTime(mtime, nameForNew),
+            )
+        }
+    }
+
+    private fun formatLocalAirTime(mtime: String, nameForNew: String): String {
+        if (nameForNew.isNotBlank()) return nameForNew
+        if (mtime.isBlank()) return ""
+        return try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+            sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+            val date = sdf.parse(mtime) ?: return mtime.substringAfter(' ', "")
+            val localSdf = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+            localSdf.timeZone = java.util.TimeZone.getDefault()
+            localSdf.format(date)
+        } catch (_: Exception) {
+            mtime.substringAfter(' ', "")
+        }
     }
 
     private fun AgeCatalogVideo.toAnimeCard(): AnimeCard {

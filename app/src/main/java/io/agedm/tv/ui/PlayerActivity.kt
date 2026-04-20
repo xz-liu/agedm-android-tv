@@ -227,10 +227,13 @@ class PlayerActivity : AppCompatActivity() {
                         showSkipOsd("跳过片头  +$label")
                         return true
                     }
-                    // UP from episode list → collapse episode section back to controls-only.
-                    if (episodePanelOpen && isInEpisodeList()) {
-                        closeEpisodeSection()
-                        return true
+                    if (episodePanelOpen) {
+                        when {
+                            // UP from source row → jump to current episode item.
+                            isInSourceList() -> { focusEpisodeList(); return true }
+                            // UP from episode row → collapse section, back to controls.
+                            isInEpisodeList() -> { closeEpisodeSection(); return true }
+                        }
                     }
                 }
 
@@ -251,7 +254,12 @@ class PlayerActivity : AppCompatActivity() {
                             focusEpisodeList()
                             return true
                         }
-                        // Already in episode/source list: let natural focus navigate.
+                        isInEpisodeList() -> {
+                            // DOWN from episode row → jump to current source, not just first item.
+                            focusSourceList()
+                            return true
+                        }
+                        // In source list: natural focus handles further DOWN (nothing below).
                     }
                 }
 
@@ -1510,6 +1518,24 @@ class PlayerActivity : AppCompatActivity() {
     private fun isInEpisodeList(): Boolean {
         val focused = currentFocus ?: return false
         return focused.parent === binding.episodeRecycler
+    }
+
+    private fun isInSourceList(): Boolean {
+        val focused = currentFocus ?: return false
+        return focused.parent === binding.sourceRecycler
+    }
+
+    private fun focusSourceList() {
+        binding.sourceRecycler.post {
+            binding.sourceRecycler.scrollToPosition(drawerPreviewSourceIndex)
+            binding.sourceRecycler.post {
+                val target = binding.sourceRecycler
+                    .findViewHolderForAdapterPosition(drawerPreviewSourceIndex)
+                    ?.itemView
+                    ?: binding.sourceRecycler.getChildAt(0)
+                target?.requestFocus() ?: binding.sourceRecycler.requestFocus()
+            }
+        }
     }
 
     private fun startProgressLoop() {
