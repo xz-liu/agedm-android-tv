@@ -67,6 +67,7 @@ class AgeRepository(
             forceRefresh = forceRefresh,
         )
         val response = json.decodeFromString<AgeDetailResponse>(body)
+        cacheAgeLookupMetadata(response.video.toLookupMetadata())
         val desktopRecommendations = runCatching {
             fetchDesktopRecommendations(animeId, forceRefresh)
         }.getOrElse { emptyList() }
@@ -230,6 +231,14 @@ class AgeRepository(
         runCatching { deferred.await() }.getOrNull()
     }
 
+    suspend fun listSuspiciousBangumiMatches(): List<BangumiMatchIssue> = withContext(Dispatchers.IO) {
+        bangumiService?.listSuspiciousMatches().orEmpty()
+    }
+
+    suspend fun refreshSuspiciousBangumiMatches(): List<BangumiMatchIssue> = withContext(Dispatchers.IO) {
+        bangumiService?.refreshSuspiciousMatches().orEmpty()
+    }
+
     suspend fun alignBangumiTitlesToAge(
         titles: List<String>,
         excludeAnimeId: Long = 0L,
@@ -274,6 +283,7 @@ class AgeRepository(
     suspend fun peekDetail(animeId: Long): AnimeDetail? = withContext(Dispatchers.IO) {
         peekCached("detail_$animeId") { body ->
             val response = json.decodeFromString<AgeDetailResponse>(body)
+            cacheAgeLookupMetadata(response.video.toLookupMetadata())
             val detail = response.toAnimeDetail(
                 desktopRecommendations = emptyList(),
                 bangumi = bangumiService?.peek(animeId),
@@ -376,6 +386,17 @@ class AgeRepository(
 
     private fun decodeHomeFeed(body: String): HomeFeed {
         val response = json.decodeFromString<AgeHomeResponse>(body)
+        cacheAgeLookupMetadata(response.latest.map { it.toLookupMetadata() })
+        cacheAgeLookupMetadata(response.recommend.map { it.toLookupMetadata() })
+        cacheAgeLookupMetadata(
+            response.weekList.values.flatten().map { item ->
+                AgeBangumiLookupMetadata(
+                    animeId = item.id,
+                    title = item.name,
+                    updatedAtMs = System.currentTimeMillis(),
+                )
+            },
+        )
         val latestCards = response.latest.map { it.toPosterCard() }
         // Index by ID so schedule items can check whether they've actually aired today.
         val latestById = latestCards.associateBy { it.animeId }
@@ -401,6 +422,7 @@ class AgeRepository(
 
     private fun decodeRecommend(body: String, page: Int, size: Int): PagedCards {
         val response = json.decodeFromString<AgePosterListResponse>(body)
+        cacheAgeLookupMetadata(response.videos.map { it.toLookupMetadata() })
         val cards = response.videos.map { it.toPosterCard() }
         touchDetailCaches(cards.map { it.animeId })
         return PagedCards(items = cards, total = response.total, page = page, size = size)
@@ -408,6 +430,7 @@ class AgeRepository(
 
     private fun decodeUpdate(body: String, page: Int, size: Int): PagedCards {
         val response = json.decodeFromString<AgePosterListResponse>(body)
+        cacheAgeLookupMetadata(response.videos.map { it.toLookupMetadata() })
         val cards = response.videos.map { it.toPosterCard() }
         touchDetailCaches(cards.map { it.animeId })
         return PagedCards(items = cards, total = response.total, page = page, size = size)
@@ -415,6 +438,7 @@ class AgeRepository(
 
     private fun decodeCatalog(body: String, query: CatalogQuery): PagedCards {
         val response = json.decodeFromString<AgeCatalogResponse>(body)
+        cacheAgeLookupMetadata(response.videos.map { it.toLookupMetadata() })
         val cards = response.videos.map { it.toAnimeCard() }
         touchDetailCaches(cards.map { it.animeId })
         return PagedCards(items = cards, total = response.total, page = query.page, size = query.size)
@@ -422,6 +446,7 @@ class AgeRepository(
 
     private fun decodeSearch(body: String, page: Int, size: Int): PagedCards {
         val response = json.decodeFromString<AgeSearchResponse>(body)
+        cacheAgeLookupMetadata(response.data.videos.map { it.toLookupMetadata() })
         val cards = response.data.videos.map { it.toAnimeCard() }
         touchDetailCaches(cards.map { it.animeId })
         return PagedCards(items = cards, total = response.data.total, page = page, size = size)
@@ -429,6 +454,15 @@ class AgeRepository(
 
     private fun decodeRankSections(body: String, year: String): List<BrowseSection> {
         val response = json.decodeFromString<AgeRankResponse>(body)
+        cacheAgeLookupMetadata(
+            response.rank.flatten().map { item ->
+                AgeBangumiLookupMetadata(
+                    animeId = item.animeId,
+                    title = item.title,
+                    updatedAtMs = System.currentTimeMillis(),
+                )
+            },
+        )
         val titles = listOf("周榜", "月榜", "总榜")
         val sections = response.rank.mapIndexed { index, entries ->
             BrowseSection(
@@ -440,6 +474,44 @@ class AgeRepository(
         touchDetailCaches(sections.flatMap { section -> section.items.map { it.animeId } })
         return sections
     }
+
+    private fun cacheAgeLookupMetadata(items: List<AgeBangumiLookupMetadata>) {
+        items.forEach(::cacheAgeLookupMetadata)
+    }
+
+    private fun cacheAgeLookupMetadata(item: AgeBangumiLookupMetadata?) {
+        val snapshot = item ?: return
+        if (snapshot.animeId <= 0L) return
+        val store = persistentStore ?: return
+        val existing = runCatching {
+            store.read(ageLookupCacheKey(snapshot.animeId))
+                ?.let { json.decodeFromString<AgeBangumiLookupMetadata>(it) }
+        }.getOrNull()
+        val merged = existing.mergeWith(snapshot)
+        store.write(ageLookupCacheKey(snapshot.animeId), json.encodeToString(merged))
+    }
+
+    private fun AgeBangumiLookupMetadata?.mergeWith(
+        incoming: AgeBangumiLookupMetadata,
+    ): AgeBangumiLookupMetadata {
+        val current = this
+        return AgeBangumiLookupMetadata(
+            animeId = incoming.animeId,
+            title = incoming.title.ifBlank { current?.title.orEmpty() },
+            originalTitle = incoming.originalTitle.ifBlank { current?.originalTitle.orEmpty() },
+            otherTitles = (current?.otherTitles.orEmpty() + incoming.otherTitles)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct(),
+            premiere = incoming.premiere.ifBlank { current?.premiere.orEmpty() },
+            company = incoming.company.ifBlank { current?.company.orEmpty() },
+            writer = incoming.writer.ifBlank { current?.writer.orEmpty() },
+            website = incoming.website.ifBlank { current?.website.orEmpty() },
+            updatedAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun ageLookupCacheKey(animeId: Long): String = "age_lookup_$animeId"
 
     private fun <T> peekCached(key: String, decode: (String) -> T): T? {
         val contentCache = cache ?: return null
@@ -592,7 +664,12 @@ class AgeRepository(
             url = apiUrl("search", "query" to query, "page" to "1"),
         )
         val response = json.decodeFromString<AgeSearchResponse>(body)
-        return if (response.code == 200) response.data.videos else emptyList()
+        return if (response.code == 200) {
+            cacheAgeLookupMetadata(response.data.videos.map { it.toLookupMetadata() })
+            response.data.videos
+        } else {
+            emptyList()
+        }
     }
 
     private fun readBangumiAgeAlignment(titles: List<String>): BangumiAgeAlignmentCacheEntry? {
@@ -790,6 +867,49 @@ class AgeRepository(
             vipSourceKeys = vipSources,
             playerJx = playerJx,
         )
+    }
+
+    private fun AgeVideo.toLookupMetadata(): AgeBangumiLookupMetadata {
+        return AgeBangumiLookupMetadata(
+            animeId = id,
+            title = name,
+            originalTitle = originalName,
+            otherTitles = splitLookupAliases(otherName),
+            premiere = premiere,
+            company = company,
+            writer = writer,
+            website = website,
+            updatedAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun AgeCatalogVideo.toLookupMetadata(): AgeBangumiLookupMetadata {
+        return AgeBangumiLookupMetadata(
+            animeId = id,
+            title = name.orEmpty(),
+            originalTitle = originalName.orEmpty(),
+            otherTitles = splitLookupAliases(otherName),
+            premiere = premiere.orEmpty(),
+            company = company.orEmpty(),
+            writer = writer.orEmpty(),
+            updatedAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun AgeRelatedItem.toLookupMetadata(): AgeBangumiLookupMetadata {
+        return AgeBangumiLookupMetadata(
+            animeId = animeId,
+            title = title,
+            updatedAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun splitLookupAliases(raw: String?): List<String> {
+        return raw.orEmpty()
+            .split('/', '／', '|', '｜')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
     }
 
     private fun AgeRelatedItem.toPosterCard(): AnimeCard {

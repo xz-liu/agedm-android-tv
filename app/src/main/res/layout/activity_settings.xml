@@ -242,7 +242,7 @@
                 android:focusable="true"
                 android:gravity="center_vertical"
                 android:nextFocusUp="@id/sourceOrderSettingButton"
-                android:nextFocusDown="@id/updateSettingButton"
+                android:nextFocusDown="@id/bangumiMatchReviewSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -272,6 +272,46 @@
                 android:textColor="@color/age_text_muted"
                 android:textSize="12sp" />
 
+            <LinearLayout
+                android:id="@+id/bangumiMatchReviewSettingButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="2dp"
+                android:background="@drawable/bg_focusable_small"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:nextFocusUp="@id/bangumiLoginSettingButton"
+                android:nextFocusDown="@id/updateSettingButton"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="检查 Bangumi 可疑匹配"
+                    android:textColor="@color/age_text"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/bangumiMatchReviewValueText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/age_text_muted"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/bangumiMatchReviewHintText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginTop="6dp"
+                android:textColor="@color/age_text_muted"
+                android:textSize="12sp" />
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -289,7 +329,7 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
-                android:nextFocusUp="@id/bangumiLoginSettingButton"
+                android:nextFocusUp="@id/bangumiMatchReviewSettingButton"
                 android:nextFocusDown="@id/clearCacheSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"

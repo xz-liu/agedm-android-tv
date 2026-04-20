@@ -44,3 +44,11 @@ data class BangumiComment(
     val content: String = "",
     val score: Int? = null,
 )
+
+data class BangumiMatchIssue(
+    val animeId: Long,
+    val ageTitle: String,
+    val bangumiTitle: String,
+    val subjectId: Long,
+    val reason: String,
+)

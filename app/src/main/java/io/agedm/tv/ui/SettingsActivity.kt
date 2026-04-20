@@ -9,15 +9,19 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
+import io.agedm.tv.data.BangumiMatchIssue
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.databinding.ActivitySettingsBinding
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
+    private var bangumiReviewJob: Job? = null
+    private var suspiciousBangumiMatches: List<BangumiMatchIssue> = emptyList()
 
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -43,6 +47,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.skipIntroSettingButton.setOnClickListener { openSkipIntroSelector() }
         binding.sourceOrderSettingButton.setOnClickListener { openSourceOrderSelector() }
         binding.bangumiLoginSettingButton.setOnClickListener { openBangumiAccount() }
+        binding.bangumiMatchReviewSettingButton.setOnClickListener { openBangumiMatchReview() }
         binding.updateSettingButton.setOnClickListener { openLatestApk() }
         binding.clearCacheSettingButton.setOnClickListener { confirmClearCache() }
         binding.clearHistorySettingButton.setOnClickListener { confirmClearHistory() }
@@ -69,6 +74,7 @@ class SettingsActivity : AppCompatActivity() {
             val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }
             binding.cacheSizeText.text = formatBytes(bytes)
         }
+        renderBangumiMatchReviewSummary()
     }
 
     private fun openSpeedSelector() {
@@ -149,6 +155,81 @@ class SettingsActivity : AppCompatActivity() {
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    private fun renderBangumiMatchReviewSummary() {
+        bangumiReviewJob?.cancel()
+        binding.bangumiMatchReviewValueText.text = "扫描中"
+        binding.bangumiMatchReviewHintText.text = "检查 AGE -> Bangumi 缓存里标题明显不一致的项目，并可手动重新匹配。"
+        bangumiReviewJob = lifecycleScope.launch {
+            val issues = withContext(Dispatchers.IO) { app.ageRepository.listSuspiciousBangumiMatches() }
+            suspiciousBangumiMatches = issues
+            updateBangumiMatchReviewSummary(issues)
+        }
+    }
+
+    private fun updateBangumiMatchReviewSummary(issues: List<BangumiMatchIssue>) {
+        binding.bangumiMatchReviewValueText.text = if (issues.isEmpty()) "未发现" else "${issues.size} 项"
+        binding.bangumiMatchReviewHintText.text = if (issues.isEmpty()) {
+            "当前没有发现标题明显不一致的 Bangumi 匹配缓存。"
+        } else {
+            "发现 ${issues.size} 项可能误配，打开后可查看列表并重新匹配。"
+        }
+    }
+
+    private fun openBangumiMatchReview() {
+        lifecycleScope.launch {
+            val issues = withContext(Dispatchers.IO) { app.ageRepository.listSuspiciousBangumiMatches() }
+            suspiciousBangumiMatches = issues
+            updateBangumiMatchReviewSummary(issues)
+            showBangumiMatchReviewDialog(issues)
+        }
+    }
+
+    private fun showBangumiMatchReviewDialog(issues: List<BangumiMatchIssue>) {
+        if (issues.isEmpty()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Bangumi 可疑匹配")
+                .setMessage("当前没有发现标题明显不一致的 AGE -> Bangumi 匹配缓存。")
+                .setPositiveButton("关闭", null)
+                .show()
+            return
+        }
+
+        val labels = issues.map { issue ->
+            "AGE：${issue.ageTitle}\nBGM：${issue.bangumiTitle}\n${issue.reason}"
+        }.toTypedArray()
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Bangumi 可疑匹配（${issues.size} 项）")
+            .setItems(labels, null)
+            .setPositiveButton("重新匹配这些项") { _, _ ->
+                refreshBangumiMatchIssues()
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun refreshBangumiMatchIssues() {
+        val currentIssues = suspiciousBangumiMatches
+        lifecycleScope.launch {
+            val remaining = withContext(Dispatchers.IO) { app.ageRepository.refreshSuspiciousBangumiMatches() }
+            suspiciousBangumiMatches = remaining
+            updateBangumiMatchReviewSummary(remaining)
+            val fixedCount = (currentIssues.size - remaining.size).coerceAtLeast(0)
+            Toast.makeText(
+                this@SettingsActivity,
+                if (remaining.isEmpty()) {
+                    "已重新处理 $fixedCount 项可疑匹配"
+                } else {
+                    "已重新处理 $fixedCount 项，剩余 ${remaining.size} 项"
+                },
+                Toast.LENGTH_SHORT,
+            ).show()
+            if (remaining.isNotEmpty()) {
+                showBangumiMatchReviewDialog(remaining)
+            }
+        }
     }
 
     private fun confirmClearCache() {

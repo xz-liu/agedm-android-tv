@@ -28,6 +28,14 @@ data class AgeVideo(
     val id: Long = 0,
     val name: String = "",
     val cover: String = "",
+    @SerialName("name_original")
+    val originalName: String = "",
+    @SerialName("name_other")
+    val otherName: String = "",
+    val premiere: String = "",
+    val writer: String = "",
+    val company: String = "",
+    val website: String = "",
     @SerialName("intro_html")
     val introHtml: String = "",
     val status: String = "",
@@ -170,6 +178,19 @@ data class AgeSearchData(
     @SerialName("totalPage")
     @Serializable(with = FlexibleIntSerializer::class)
     val totalPage: Int = 0,
+)
+
+@Serializable
+data class AgeBangumiLookupMetadata(
+    val animeId: Long,
+    val title: String = "",
+    val originalTitle: String = "",
+    val otherTitles: List<String> = emptyList(),
+    val premiere: String = "",
+    val company: String = "",
+    val writer: String = "",
+    val website: String = "",
+    val updatedAtMs: Long = 0L,
 )
 
 @Serializable

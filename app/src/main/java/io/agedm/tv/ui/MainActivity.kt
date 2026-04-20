@@ -478,10 +478,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHistory() {
-        if (app.bangumiAccountService.isLoggedIn()) {
-            loadMyPage()
-            return
-        }
         loadLocalHistory()
     }
 
@@ -1193,11 +1189,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateHistoryNavLabel() {
-        binding.navHistoryButton.text = if (app.bangumiAccountService.isLoggedIn()) {
-            getString(R.string.btn_my)
-        } else {
-            getString(R.string.btn_history)
-        }
+        binding.navHistoryButton.text = getString(R.string.btn_history)
     }
 
     private fun configureBrowseSelection(focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId()) {
