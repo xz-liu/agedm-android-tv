@@ -9,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
+import io.agedm.tv.data.BangumiMatchCandidate
 import io.agedm.tv.data.BangumiMatchIssue
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.databinding.ActivitySettingsBinding
@@ -173,7 +174,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.bangumiMatchReviewHintText.text = if (issues.isEmpty()) {
             "当前没有发现标题明显不一致的 Bangumi 匹配缓存。"
         } else {
-            "发现 ${issues.size} 项可能误配，打开后可查看列表并重新匹配。"
+            "发现 ${issues.size} 项可能误配，打开后可按 OK 进入手动匹配，也可批量重新匹配。"
         }
     }
 
@@ -202,12 +203,77 @@ class SettingsActivity : AppCompatActivity() {
 
         MaterialAlertDialogBuilder(this)
             .setTitle("Bangumi 可疑匹配（${issues.size} 项）")
-            .setItems(labels, null)
+            .setItems(labels) { _, which ->
+                openManualBangumiMatch(issues[which])
+            }
             .setPositiveButton("重新匹配这些项") { _, _ ->
                 refreshBangumiMatchIssues()
             }
             .setNegativeButton("关闭", null)
             .show()
+    }
+
+    private fun openManualBangumiMatch(issue: BangumiMatchIssue) {
+        lifecycleScope.launch {
+            val candidates = withContext(Dispatchers.IO) {
+                app.ageRepository.searchBangumiManualMatchCandidates(issue.animeId, issue.ageTitle)
+            }
+            showManualBangumiMatchDialog(issue, candidates)
+        }
+    }
+
+    private fun showManualBangumiMatchDialog(
+        issue: BangumiMatchIssue,
+        candidates: List<BangumiMatchCandidate>,
+    ) {
+        if (candidates.isEmpty()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("手动匹配")
+                .setMessage("没有找到可供手动选择的 Bangumi 候选。")
+                .setPositiveButton("关闭", null)
+                .show()
+            return
+        }
+        val labels = candidates.map { candidate ->
+            listOf(candidate.title, candidate.subtitle)
+                .filter { it.isNotBlank() }
+                .joinToString("\n")
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("手动匹配：${issue.ageTitle}")
+            .setItems(labels) { _, which ->
+                assignManualBangumiMatch(issue, candidates[which])
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun assignManualBangumiMatch(
+        issue: BangumiMatchIssue,
+        candidate: BangumiMatchCandidate,
+    ) {
+        lifecycleScope.launch {
+            val metadata = withContext(Dispatchers.IO) {
+                app.ageRepository.assignManualBangumiMatch(
+                    animeId = issue.animeId,
+                    title = issue.ageTitle,
+                    subjectId = candidate.subjectId,
+                )
+            }
+            if (metadata == null) {
+                Toast.makeText(this@SettingsActivity, "手动匹配失败", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val issues = withContext(Dispatchers.IO) { app.ageRepository.listSuspiciousBangumiMatches() }
+            suspiciousBangumiMatches = issues
+            updateBangumiMatchReviewSummary(issues)
+            Toast.makeText(
+                this@SettingsActivity,
+                "已手动匹配到「${candidate.title}」",
+                Toast.LENGTH_SHORT,
+            ).show()
+            showBangumiMatchReviewDialog(issues)
+        }
     }
 
     private fun refreshBangumiMatchIssues() {

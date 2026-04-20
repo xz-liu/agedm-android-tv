@@ -52,3 +52,9 @@ data class BangumiMatchIssue(
     val subjectId: Long,
     val reason: String,
 )
+
+data class BangumiMatchCandidate(
+    val subjectId: Long,
+    val title: String,
+    val subtitle: String = "",
+)

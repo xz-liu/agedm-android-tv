@@ -53,6 +53,7 @@ class AgeRepository(
                 client = client,
                 json = json,
                 alignToAge = ::alignBangumiSubjectToAge,
+                ensureAgeMetadata = ::ensureAgeLookupMetadata,
             )
         }
     }
@@ -235,11 +236,30 @@ class AgeRepository(
     }
 
     suspend fun listSuspiciousBangumiMatches(): List<BangumiMatchIssue> = withContext(Dispatchers.IO) {
+        backfillAgeLookupMetadataForMatchedEntries()
         bangumiService?.listSuspiciousMatches().orEmpty()
     }
 
     suspend fun refreshSuspiciousBangumiMatches(): List<BangumiMatchIssue> = withContext(Dispatchers.IO) {
+        backfillAgeLookupMetadataForMatchedEntries()
         bangumiService?.refreshSuspiciousMatches().orEmpty()
+    }
+
+    suspend fun searchBangumiManualMatchCandidates(
+        animeId: Long,
+        title: String,
+    ): List<BangumiMatchCandidate> = withContext(Dispatchers.IO) {
+        ensureAgeLookupMetadata(animeId)
+        bangumiService?.searchManualMatchCandidates(animeId, title).orEmpty()
+    }
+
+    suspend fun assignManualBangumiMatch(
+        animeId: Long,
+        title: String,
+        subjectId: Long,
+    ): BangumiMetadata? = withContext(Dispatchers.IO) {
+        ensureAgeLookupMetadata(animeId)
+        bangumiService?.assignManualMatch(animeId, title, subjectId)
     }
 
     suspend fun alignBangumiTitlesToAge(
@@ -480,6 +500,13 @@ class AgeRepository(
 
     private fun cacheAgeLookupMetadata(items: List<AgeBangumiLookupMetadata>) {
         items.forEach(::cacheAgeLookupMetadata)
+    }
+
+    private suspend fun backfillAgeLookupMetadataForMatchedEntries() {
+        val store = persistentStore ?: return
+        store.listKeys("bgm_match_")
+            .mapNotNull { it.removePrefix("bgm_match_").toLongOrNull() }
+            .forEach { animeId -> ensureAgeLookupMetadata(animeId) }
     }
 
     private suspend fun ensureAgeLookupMetadata(animeId: Long): AgeBangumiLookupMetadata? {
