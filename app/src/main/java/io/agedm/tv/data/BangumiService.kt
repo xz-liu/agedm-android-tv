@@ -2,6 +2,7 @@ package io.agedm.tv.data
 
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -23,6 +24,11 @@ internal class BangumiService(
     private val alignToAge: suspend (titles: List<String>, excludeAnimeId: Long) -> AgeRelatedItem?,
     private val ensureAgeMetadata: suspend (animeId: Long) -> AgeBangumiLookupMetadata?,
 ) {
+
+    private val subjectSnapshotCache = ConcurrentHashMap<Long, BangumiSubjectSnapshot>()
+
+    @Volatile
+    private var subjectSnapshotCacheLoaded = false
 
     fun peek(animeId: Long): BangumiMetadata? {
         val body = store.read(cacheKey(animeId)) ?: return null
@@ -188,6 +194,46 @@ internal class BangumiService(
         return fresh
     }
 
+    suspend fun rebuildSubjectIndexAndRematchAll(): BangumiRematchSummary {
+        val ageEntries = loadAllAgeLookupMetadata()
+        if (ageEntries.isEmpty()) {
+            clearSubjectSnapshots()
+            return BangumiRematchSummary(
+                ageEntries = 0,
+                indexedSubjects = 0,
+                matchedEntries = 0,
+                missingEntries = 0,
+            )
+        }
+
+        clearSubjectSnapshots()
+        ageEntries.forEach { metadata ->
+            buildSearchQueries(metadata).forEach { query ->
+                runCatching { performSearch(query) }
+            }
+        }
+
+        var matchedEntries = 0
+        var missingEntries = 0
+        ageEntries.forEach { metadata ->
+            clearMatch(metadata.animeId)
+            val resolved = searchSubject(ageMetadata = metadata, includeRemoteSearch = false)
+            cacheResolvedMatch(metadata.animeId, resolved)
+            if (resolved == null) {
+                missingEntries += 1
+            } else {
+                matchedEntries += 1
+            }
+        }
+
+        return BangumiRematchSummary(
+            ageEntries = ageEntries.size,
+            indexedSubjects = loadSubjectSnapshots().size,
+            matchedEntries = matchedEntries,
+            missingEntries = missingEntries,
+        )
+    }
+
     private suspend fun loadMetadata(
         animeId: Long,
         subjectId: Long,
@@ -195,6 +241,7 @@ internal class BangumiService(
     ): BangumiMetadata {
         val detail = fetchSubjectDetail(subjectId)
         val document = fetchSubjectDocument(subjectId)
+        cacheSubjectSnapshot(detail, document)
         return BangumiMetadata(
             subjectId = subjectId,
             matchedTitle = matchedTitle,
@@ -330,19 +377,30 @@ internal class BangumiService(
         if (cached != null && !isResolvedMatchStale(cached)) {
             return cached.toResolvedMatch()
         }
-        val resolved = searchSubject(animeId, title)
+        val resolved = searchSubject(animeId, title, includeRemoteSearch = true)
         cacheResolvedMatch(animeId, resolved)
         return resolved
     }
 
-    private fun searchSubject(animeId: Long, title: String): ResolvedMatch? {
+    private fun searchSubject(
+        animeId: Long,
+        title: String,
+        includeRemoteSearch: Boolean,
+    ): ResolvedMatch? {
         val ageMetadata = readAgeLookupMetadata(animeId)?.mergeFallbackTitle(title)
             ?: AgeBangumiLookupMetadata(
                 animeId = animeId,
                 title = title,
                 updatedAtMs = System.currentTimeMillis(),
             )
-        val best = rankedSubjectCandidates(ageMetadata).firstOrNull()
+        return searchSubject(ageMetadata, includeRemoteSearch)
+    }
+
+    private fun searchSubject(
+        ageMetadata: AgeBangumiLookupMetadata,
+        includeRemoteSearch: Boolean,
+    ): ResolvedMatch? {
+        val best = rankedSubjectCandidates(ageMetadata, includeRemoteSearch).firstOrNull()
         return best?.takeIf(::isAcceptableCandidate)?.let { candidate ->
             ResolvedMatch(
                 subjectId = candidate.subjectId,
@@ -351,25 +409,134 @@ internal class BangumiService(
         }
     }
 
-    private fun rankedSubjectCandidates(ageMetadata: AgeBangumiLookupMetadata): List<SubjectCandidateMatch> {
+    private fun rankedSubjectCandidates(
+        ageMetadata: AgeBangumiLookupMetadata,
+        includeRemoteSearch: Boolean = true,
+    ): List<SubjectCandidateMatch> {
         val searchQueries = buildSearchQueries(ageMetadata)
-        if (searchQueries.isEmpty()) return emptyList()
+        val seeds = linkedMapOf<Long, SubjectCandidateSeed>()
 
-        val seenIds = mutableSetOf<Long>()
-        val ranked = mutableListOf<SubjectCandidateMatch>()
-        searchQueries.forEachIndexed { queryIndex, query ->
-            val payload = performSearch(query)
-            payload.data.forEachIndexed candidateLoop@{ resultIndex, candidate ->
-                if (!seenIds.add(candidate.id)) return@candidateLoop
-                ranked += evaluateCandidate(
-                    ageMetadata = ageMetadata,
-                    candidate = candidate,
-                    queryIndex = queryIndex,
-                    resultIndex = resultIndex,
-                )
+        loadLocalCorpusCandidateSeeds(ageMetadata).forEach { seed ->
+            seeds[seed.subjectId] = mergeSubjectCandidateSeed(seeds[seed.subjectId], seed)
+        }
+
+        if (includeRemoteSearch) {
+            searchQueries.forEachIndexed { queryIndex, query ->
+                val payload = performSearch(query)
+                payload.data.forEachIndexed candidateLoop@{ resultIndex, candidate ->
+                    if (candidate.id <= 0L) return@candidateLoop
+                    val seed = SubjectCandidateSeed(
+                        subjectId = candidate.id,
+                        candidate = candidate.toCandidateData(),
+                        queryIndex = queryIndex,
+                        resultIndex = resultIndex,
+                        fromSearch = true,
+                    )
+                    seeds[candidate.id] = mergeSubjectCandidateSeed(seeds[candidate.id], seed)
+                }
             }
         }
-        return ranked.sortedByDescending { it.totalScore }
+
+        return seeds.values
+            .map { seed -> evaluateCandidate(ageMetadata, seed) }
+            .sortedByDescending { it.totalScore }
+    }
+
+    private fun loadLocalCorpusCandidateSeeds(
+        ageMetadata: AgeBangumiLookupMetadata,
+    ): List<SubjectCandidateSeed> {
+        val normalizedQueries = ageMetadata.allTitles()
+            .map(::normalizeTitle)
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (normalizedQueries.isEmpty()) return emptyList()
+
+        return loadSubjectSnapshots()
+            .asSequence()
+            .map { snapshot ->
+                val candidate = snapshot.toCandidateData()
+                val bucketScore = scoreLocalCorpusBucket(ageMetadata, normalizedQueries, candidate)
+                bucketScore to candidate
+            }
+            .filter { (bucketScore, candidate) -> bucketScore > 0 && candidate.subjectId > 0L }
+            .sortedByDescending { (bucketScore, _) -> bucketScore }
+            .take(MAX_LOCAL_CORPUS_CANDIDATES)
+            .map { (bucketScore, candidate) ->
+                SubjectCandidateSeed(
+                    subjectId = candidate.subjectId,
+                    candidate = candidate,
+                    fromLocalCorpus = true,
+                    localCorpusScore = bucketScore,
+                )
+            }
+            .toList()
+    }
+
+    private fun scoreLocalCorpusBucket(
+        ageMetadata: AgeBangumiLookupMetadata,
+        normalizedQueries: List<String>,
+        candidate: BangumiSubjectCandidateData,
+    ): Int {
+        val normalizedCandidateTitles = candidate.allTitles()
+            .map(::normalizeTitle)
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (normalizedCandidateTitles.isEmpty()) return 0
+
+        var score = 0
+        if (normalizedQueries.any { query -> query in normalizedCandidateTitles }) {
+            score += 180
+        }
+        if (normalizedQueries.any { query ->
+                normalizedCandidateTitles.any { candidateTitle ->
+                    candidateTitle.contains(query) || query.contains(candidateTitle)
+                }
+            }
+        ) {
+            score += 90
+        }
+
+        val queryPrefixes = normalizedQueries.map { it.take(LOCAL_BUCKET_PREFIX_LENGTH) }.filter { it.length >= 3 }.toSet()
+        if (queryPrefixes.isNotEmpty() && normalizedCandidateTitles.any { title ->
+                queryPrefixes.any { prefix -> title.startsWith(prefix) }
+            }
+        ) {
+            score += 60
+        }
+
+        if (ageMetadata.website.matchesCandidateWebsite(candidate)) {
+            score += 80
+        }
+        if (ageMetadata.company.matchesCandidateCompany(candidate)) {
+            score += 70
+        }
+        if (ageMetadata.writer.matchesCandidateOriginalWork(candidate)) {
+            score += 70
+        }
+        if (ageMetadata.premiere.dateMatchLevel(candidate) != DateMatchLevel.NONE) {
+            score += 80
+        }
+        if (ageMetadata.premiere.hasConflictingPremiereYear(candidate)) {
+            score -= 120
+        }
+
+        return score
+    }
+
+    private fun mergeSubjectCandidateSeed(
+        current: SubjectCandidateSeed?,
+        incoming: SubjectCandidateSeed,
+    ): SubjectCandidateSeed {
+        if (current == null) return incoming
+        return SubjectCandidateSeed(
+            subjectId = current.subjectId,
+            candidate = current.candidate.mergeWith(incoming.candidate),
+            queryIndex = minOf(current.queryIndex, incoming.queryIndex),
+            resultIndex = minOf(current.resultIndex, incoming.resultIndex),
+            fromSearch = current.fromSearch || incoming.fromSearch,
+            fromLocalCorpus = current.fromLocalCorpus || incoming.fromLocalCorpus,
+            localCorpusScore = maxOf(current.localCorpusScore, incoming.localCorpusScore),
+        )
     }
 
     private fun readResolvedMatchCache(animeId: Long): ResolvedMatchCacheEntry? {
@@ -421,11 +588,13 @@ internal class BangumiService(
         resolved: ResolvedMatch,
     ): MatchDiagnosis? {
         val cachedMetadata = peek(animeId)
-        val candidateTitles = listOf(
-            cachedMetadata?.titleCn.orEmpty(),
-            cachedMetadata?.title.orEmpty(),
-            resolved.matchedTitle,
-        ).filter { it.isNotBlank() }
+        val snapshot = readSubjectSnapshot(resolved.subjectId)
+        val candidateTitles = buildList {
+            add(cachedMetadata?.titleCn.orEmpty())
+            add(cachedMetadata?.title.orEmpty())
+            addAll(snapshot?.allTitles().orEmpty())
+            add(resolved.matchedTitle)
+        }.filter { it.isNotBlank() }.distinct()
         if (candidateTitles.isEmpty()) return null
         val titleMatch = scoreTitleMatch(
             queryTitles = ageMetadata.allTitles(),
@@ -486,28 +655,31 @@ internal class BangumiService(
             if (!response.isSuccessful) {
                 throw IOException("Bangumi 搜索失败 ${response.code}")
             }
-            return json.decodeFromString(response.body?.string().orEmpty())
+            return json.decodeFromString<BangumiSearchResponse>(response.body?.string().orEmpty()).also { payload ->
+                payload.data.forEach(::cacheSubjectSnapshot)
+            }
         }
     }
 
     private fun evaluateCandidate(
         ageMetadata: AgeBangumiLookupMetadata,
-        candidate: BangumiSearchSubject,
-        queryIndex: Int,
-        resultIndex: Int,
+        seed: SubjectCandidateSeed,
     ): SubjectCandidateMatch {
+        val candidate = seed.candidate
         val titleMatch = scoreTitleMatch(
             queryTitles = ageMetadata.allTitles(),
             candidateTitles = candidate.allTitles(),
         )
-        var totalScore = titleMatch.score
+        var totalScore = titleMatch.score + seed.localCorpusScore
         var metadataHits = 0
+        val dateMatchLevel = ageMetadata.premiere.dateMatchLevel(candidate)
+        val conflictingPremiereYear = ageMetadata.premiere.hasConflictingPremiereYear(candidate)
 
         if (ageMetadata.website.matchesCandidateWebsite(candidate)) {
             totalScore += WEBSITE_MATCH_SCORE
             metadataHits += 1
         }
-        when (ageMetadata.premiere.dateMatchLevel(candidate)) {
+        when (dateMatchLevel) {
             DateMatchLevel.DAY -> {
                 totalScore += DATE_DAY_MATCH_SCORE
                 metadataHits += 1
@@ -525,6 +697,9 @@ internal class BangumiService(
 
             DateMatchLevel.NONE -> Unit
         }
+        if (conflictingPremiereYear) {
+            totalScore -= DATE_YEAR_MISMATCH_SCORE
+        }
         if (ageMetadata.company.matchesCandidateCompany(candidate)) {
             totalScore += COMPANY_MATCH_SCORE
             metadataHits += 1
@@ -533,23 +708,39 @@ internal class BangumiService(
             totalScore += WRITER_MATCH_SCORE
             metadataHits += 1
         }
-        totalScore += (MAX_MATCH_SEARCH_RESULTS - resultIndex).coerceAtLeast(0) * RESULT_RANK_SCORE
-        totalScore += (MAX_MATCH_SEARCH_QUERIES - queryIndex).coerceAtLeast(0) * QUERY_RANK_SCORE
+        if (titleMatch.exact && metadataHits > 0) {
+            totalScore += EXACT_ALIAS_METADATA_SCORE
+        }
+        if (titleMatch.exact && dateMatchLevel != DateMatchLevel.NONE) {
+            totalScore += EXACT_ALIAS_DATE_SCORE
+        }
+        if (seed.fromSearch) {
+            totalScore += (MAX_MATCH_SEARCH_RESULTS - seed.resultIndex).coerceAtLeast(0) * RESULT_RANK_SCORE
+            totalScore += (MAX_MATCH_SEARCH_QUERIES - seed.queryIndex).coerceAtLeast(0) * QUERY_RANK_SCORE
+        }
+        if (seed.fromLocalCorpus && titleMatch.exact) {
+            totalScore += LOCAL_CORPUS_EXACT_SCORE
+        }
 
         return SubjectCandidateMatch(
-            subjectId = candidate.id,
+            subjectId = candidate.subjectId,
             displayTitle = candidate.displayTitle(),
             totalScore = totalScore,
             titleMatch = titleMatch,
             metadataHits = metadataHits,
             originalTitle = candidate.name,
-            date = candidate.date.orEmpty(),
+            date = candidate.date,
             company = candidate.companyHint(),
+            reasonHint = buildCandidateReasonHint(titleMatch, metadataHits),
+            conflictingPremiereYear = conflictingPremiereYear,
         )
     }
 
     private fun isAcceptableCandidate(candidate: SubjectCandidateMatch): Boolean {
-        return candidate.titleMatch.strong ||
+        if (candidate.titleMatch.seasonMismatch) return false
+        if (candidate.conflictingPremiereYear && candidate.metadataHits < 1) return false
+        return (candidate.titleMatch.exact && candidate.totalScore >= EXACT_TITLE_ACCEPT_SCORE) ||
+            (candidate.titleMatch.strong && candidate.metadataHits >= 1) ||
             (candidate.metadataHits >= 2 && candidate.totalScore >= REVIEW_ACCEPT_SCORE_THRESHOLD)
     }
 
@@ -558,10 +749,24 @@ internal class BangumiService(
             candidate.originalTitle,
             candidate.date.takeIf { it.isNotBlank() },
             candidate.company.takeIf { it.isNotBlank() },
+            candidate.reasonHint.takeIf { it.isNotBlank() },
         )
             .filterNotNull()
             .distinct()
             .joinToString(" · ")
+    }
+
+    private fun buildCandidateReasonHint(
+        titleMatch: TitleMatchScore,
+        metadataHits: Int,
+    ): String {
+        return when {
+            titleMatch.exact && metadataHits >= 2 -> "别名/标题精确匹配"
+            titleMatch.exact -> "存在精确别名"
+            titleMatch.strong && metadataHits >= 1 -> "标题接近且元数据命中"
+            metadataHits >= 2 -> "元数据命中较多"
+            else -> ""
+        }
     }
 
     private fun scoreTitleMatch(
@@ -598,9 +803,12 @@ internal class BangumiService(
     private fun scoreSingleTitlePair(query: String, candidate: String): TitleMatchScore {
         var score = 0
         var strong = false
+        var exact = false
+        var seasonMismatch = false
         if (query == candidate) {
             score += 1000
             strong = true
+            exact = true
         }
         val editDistance = levenshteinDistance(query, candidate)
         if (editDistance == 1 && maxOf(query.length, candidate.length) >= 3) {
@@ -617,10 +825,20 @@ internal class BangumiService(
         score += commonPrefix * 8
         val querySeason = extractSeasonHint(query)
         val candidateSeason = extractSeasonHint(candidate)
-        if (querySeason != null && querySeason == candidateSeason) {
-            score += 140
+        if (querySeason != null && candidateSeason != null) {
+            if (querySeason == candidateSeason) {
+                score += 140
+            } else {
+                score -= SEASON_MISMATCH_SCORE
+                seasonMismatch = true
+            }
         }
-        return TitleMatchScore(score = score, strong = strong)
+        return TitleMatchScore(
+            score = score,
+            strong = strong,
+            exact = exact,
+            seasonMismatch = seasonMismatch,
+        )
     }
 
     private fun normalizeTitle(value: String): String {
@@ -708,6 +926,10 @@ internal class BangumiService(
         }
     }
 
+    private fun subjectCacheKey(subjectId: Long): String = "bgm_subject_$subjectId"
+
+    private fun subjectCacheKeyPrefix(): String = "bgm_subject_"
+
     private fun cacheKey(animeId: Long): String = "bgm_$animeId"
 
     private fun matchCacheKey(animeId: Long): String = "bgm_match_$animeId"
@@ -715,6 +937,8 @@ internal class BangumiService(
     private fun matchCacheKeyPrefix(): String = "bgm_match_"
 
     private fun ageLookupCacheKey(animeId: Long): String = "age_lookup_$animeId"
+
+    private fun ageLookupCacheKeyPrefix(): String = "age_lookup_"
 
     private fun AgeBangumiLookupMetadata.mergeFallbackTitle(fallbackTitle: String): AgeBangumiLookupMetadata {
         return if (title.isNotBlank()) this else copy(title = fallbackTitle)
@@ -731,18 +955,97 @@ internal class BangumiService(
         return title.ifBlank { originalTitle }.ifBlank { otherTitles.firstOrNull().orEmpty() }
     }
 
-    private fun String.matchesCandidateWebsite(candidate: BangumiSearchSubject): Boolean {
-        val expectedHost = normalizeHost(this)
-        if (expectedHost.isBlank()) return false
-        return candidate.infoboxValuesMatching("官方网站")
-            .map(::normalizeHost)
-            .any { it == expectedHost }
+    private fun loadSubjectSnapshots(): Collection<BangumiSubjectSnapshot> {
+        if (!subjectSnapshotCacheLoaded) {
+            synchronized(subjectSnapshotCache) {
+                if (!subjectSnapshotCacheLoaded) {
+                    store.listKeys(subjectCacheKeyPrefix())
+                        .mapNotNull { key ->
+                            key.removePrefix(subjectCacheKeyPrefix()).toLongOrNull()
+                        }
+                        .forEach { subjectId ->
+                            readSubjectSnapshot(subjectId)
+                        }
+                    subjectSnapshotCacheLoaded = true
+                }
+            }
+        }
+        return subjectSnapshotCache.values
     }
 
-    private fun String.dateMatchLevel(candidate: BangumiSearchSubject): DateMatchLevel {
+    private fun loadAllAgeLookupMetadata(): List<AgeBangumiLookupMetadata> {
+        return store.listKeys(ageLookupCacheKeyPrefix())
+            .mapNotNull { key -> key.removePrefix(ageLookupCacheKeyPrefix()).toLongOrNull() }
+            .mapNotNull(::readAgeLookupMetadata)
+            .sortedBy { it.bestDisplayTitle() }
+    }
+
+    private fun clearSubjectSnapshots() {
+        subjectSnapshotCache.clear()
+        store.listKeys(subjectCacheKeyPrefix()).forEach(store::remove)
+        subjectSnapshotCacheLoaded = true
+    }
+
+    private fun readSubjectSnapshot(subjectId: Long): BangumiSubjectSnapshot? {
+        if (subjectId <= 0L) return null
+        subjectSnapshotCache[subjectId]?.let { return it }
+        val body = store.read(subjectCacheKey(subjectId)) ?: return null
+        return runCatching { json.decodeFromString<BangumiSubjectSnapshot>(body) }
+            .getOrNull()
+            ?.also { snapshot -> subjectSnapshotCache[subjectId] = snapshot }
+    }
+
+    private fun cacheSubjectSnapshot(candidate: BangumiSearchSubject) {
+        if (candidate.id <= 0L) return
+        writeSubjectSnapshot(
+            BangumiSubjectSnapshot(
+                subjectId = candidate.id,
+                name = candidate.name,
+                nameCn = candidate.nameCn,
+                aliases = explodeAliasValues(candidate.aliasTitles()),
+                date = candidate.date.orEmpty(),
+                company = candidate.infoboxValuesMatching("制作").firstOrNull().orEmpty(),
+                writer = candidate.infoboxValuesMatching("原作").firstOrNull().orEmpty(),
+                website = candidate.infoboxValuesMatching("官方网站").firstOrNull().orEmpty(),
+                tags = candidate.tags.map { it.name }.filter { it.isNotBlank() },
+                updatedAtMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private fun cacheSubjectSnapshot(
+        detail: BangumiSubjectResponse,
+        @Suppress("UNUSED_PARAMETER") document: org.jsoup.nodes.Document,
+    ) {
+        if (detail.id <= 0L) return
+        writeSubjectSnapshot(
+            BangumiSubjectSnapshot(
+                subjectId = detail.id,
+                name = detail.name,
+                nameCn = detail.nameCn,
+                tags = detail.tags.map { it.name }.filter { it.isNotBlank() },
+                updatedAtMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private fun writeSubjectSnapshot(snapshot: BangumiSubjectSnapshot) {
+        if (snapshot.subjectId <= 0L) return
+        val merged = readSubjectSnapshot(snapshot.subjectId).mergeWith(snapshot)
+        subjectSnapshotCache[snapshot.subjectId] = merged
+        store.write(subjectCacheKey(snapshot.subjectId), json.encodeToString(merged))
+    }
+
+    private fun String.matchesCandidateWebsite(candidate: BangumiSubjectCandidateData): Boolean {
+        val expectedHost = normalizeHost(this)
+        if (expectedHost.isBlank()) return false
+        return normalizeHost(candidate.website) == expectedHost
+    }
+
+    private fun String.dateMatchLevel(candidate: BangumiSubjectCandidateData): DateMatchLevel {
         if (this.isBlank()) return DateMatchLevel.NONE
         val expected = parseDateParts(this)
-        val actual = parseDateParts(candidate.date.orEmpty())
+        val actual = parseDateParts(candidate.date)
         val expectedYear = expected.first ?: return DateMatchLevel.NONE
         val actualYear = actual.first ?: return DateMatchLevel.NONE
         if (expectedYear != actualYear) return DateMatchLevel.NONE
@@ -759,35 +1062,47 @@ internal class BangumiService(
         }
     }
 
-    private fun String.matchesCandidateCompany(candidate: BangumiSearchSubject): Boolean {
+    private fun String.hasConflictingPremiereYear(candidate: BangumiSubjectCandidateData): Boolean {
+        if (this.isBlank() || candidate.date.isBlank()) return false
+        val expectedYear = parseDateParts(this).first ?: return false
+        val actualYear = parseDateParts(candidate.date).first ?: return false
+        return expectedYear != actualYear
+    }
+
+    private fun String.matchesCandidateCompany(candidate: BangumiSubjectCandidateData): Boolean {
         val expected = normalizeLooseToken(this)
         if (expected.isBlank()) return false
-        val tagMatch = candidate.tags.any { normalizeLooseToken(it.name) == expected }
+        val tagMatch = candidate.tags.any { normalizeLooseToken(it) == expected }
         if (tagMatch) return true
-        return candidate.infoboxValuesMatching("制作")
+        return candidate.company
+            .splitAliasLikeValues()
             .map(::normalizeLooseToken)
             .any { it.contains(expected) || expected.contains(it) }
     }
 
-    private fun String.matchesCandidateOriginalWork(candidate: BangumiSearchSubject): Boolean {
+    private fun String.matchesCandidateOriginalWork(candidate: BangumiSubjectCandidateData): Boolean {
         val expected = normalizeLooseToken(this)
         if (expected.isBlank()) return false
-        return candidate.infoboxValuesMatching("原作")
+        return candidate.writer
+            .splitAliasLikeValues()
             .map(::normalizeLooseToken)
             .any { it.contains(expected) || expected.contains(it) }
     }
 
-    private fun BangumiSearchSubject.displayTitle(): String {
+    private fun BangumiSubjectCandidateData.displayTitle(): String {
         return nameCn.ifBlank { name }
     }
 
-    private fun BangumiSearchSubject.companyHint(): String {
-        return tags.firstOrNull { it.count > 0 && it.name.isNotBlank() && isLikelyCompanyName(it.name) }?.name
-            ?: infoboxValuesMatching("制作").firstOrNull().orEmpty()
+    private fun BangumiSubjectCandidateData.companyHint(): String {
+        return company.splitAliasLikeValues().firstOrNull { it.isNotBlank() }
+            ?: tags.firstOrNull { it.isNotBlank() && isLikelyCompanyName(it) }.orEmpty()
     }
 
-    private fun BangumiSearchSubject.allTitles(): List<String> {
-        return listOf(nameCn, name) + infoboxValuesMatching("别名")
+    private fun BangumiSubjectCandidateData.allTitles(): List<String> {
+        return (listOf(nameCn, name) + aliases)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
     }
 
     private fun BangumiSearchSubject.infoboxValuesMatching(keyword: String): List<String> {
@@ -797,6 +1112,101 @@ internal class BangumiService(
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .toList()
+    }
+
+    private fun BangumiSearchSubject.aliasTitles(): List<String> {
+        return explodeAliasValues(infoboxValuesMatching("别名"))
+    }
+
+    private fun BangumiSearchSubject.toCandidateData(): BangumiSubjectCandidateData {
+        return BangumiSubjectCandidateData(
+            subjectId = id,
+            name = name,
+            nameCn = nameCn,
+            aliases = aliasTitles(),
+            date = date.orEmpty(),
+            tags = tags.map { it.name }.filter { it.isNotBlank() },
+            company = infoboxValuesMatching("制作").firstOrNull().orEmpty(),
+            writer = infoboxValuesMatching("原作").firstOrNull().orEmpty(),
+            website = infoboxValuesMatching("官方网站").firstOrNull().orEmpty(),
+        )
+    }
+
+    private fun BangumiSubjectSnapshot.toCandidateData(): BangumiSubjectCandidateData {
+        return BangumiSubjectCandidateData(
+            subjectId = subjectId,
+            name = name,
+            nameCn = nameCn,
+            aliases = aliases,
+            date = date,
+            tags = tags,
+            company = company,
+            writer = writer,
+            website = website,
+        )
+    }
+
+    private fun BangumiSubjectSnapshot.allTitles(): List<String> {
+        return (listOf(nameCn, name) + aliases)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun BangumiSubjectCandidateData.mergeWith(other: BangumiSubjectCandidateData): BangumiSubjectCandidateData {
+        return BangumiSubjectCandidateData(
+            subjectId = if (subjectId > 0L) subjectId else other.subjectId,
+            name = other.name.ifBlank { name },
+            nameCn = other.nameCn.ifBlank { nameCn },
+            aliases = (aliases + other.aliases)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct(),
+            date = other.date.ifBlank { date },
+            tags = (tags + other.tags)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct(),
+            company = other.company.ifBlank { company },
+            writer = other.writer.ifBlank { writer },
+            website = other.website.ifBlank { website },
+        )
+    }
+
+    private fun BangumiSubjectSnapshot?.mergeWith(incoming: BangumiSubjectSnapshot): BangumiSubjectSnapshot {
+        val current = this
+        return BangumiSubjectSnapshot(
+            subjectId = incoming.subjectId,
+            name = incoming.name.ifBlank { current?.name.orEmpty() },
+            nameCn = incoming.nameCn.ifBlank { current?.nameCn.orEmpty() },
+            aliases = (current?.aliases.orEmpty() + incoming.aliases)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct(),
+            date = incoming.date.ifBlank { current?.date.orEmpty() },
+            company = incoming.company.ifBlank { current?.company.orEmpty() },
+            writer = incoming.writer.ifBlank { current?.writer.orEmpty() },
+            website = incoming.website.ifBlank { current?.website.orEmpty() },
+            tags = (current?.tags.orEmpty() + incoming.tags)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct(),
+            updatedAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun explodeAliasValues(values: List<String>): List<String> {
+        return values
+            .flatMap { value -> value.splitAliasLikeValues() }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun String.splitAliasLikeValues(): List<String> {
+        return split(Regex("\\s*(?:/|／|\\||｜|、|；|;|\\n|\\r)+\\s*"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
     }
 
     private fun BangumiInfoboxEntry.values(): List<String> {
@@ -833,6 +1243,44 @@ internal class BangumiService(
     private data class TitleMatchScore(
         val score: Int = 0,
         val strong: Boolean = false,
+        val exact: Boolean = false,
+        val seasonMismatch: Boolean = false,
+    )
+
+    @Serializable
+    private data class BangumiSubjectSnapshot(
+        val subjectId: Long = 0L,
+        val name: String = "",
+        val nameCn: String = "",
+        val aliases: List<String> = emptyList(),
+        val date: String = "",
+        val company: String = "",
+        val writer: String = "",
+        val website: String = "",
+        val tags: List<String> = emptyList(),
+        val updatedAtMs: Long = 0L,
+    )
+
+    private data class BangumiSubjectCandidateData(
+        val subjectId: Long = 0L,
+        val name: String = "",
+        val nameCn: String = "",
+        val aliases: List<String> = emptyList(),
+        val date: String = "",
+        val tags: List<String> = emptyList(),
+        val company: String = "",
+        val writer: String = "",
+        val website: String = "",
+    )
+
+    private data class SubjectCandidateSeed(
+        val subjectId: Long,
+        val candidate: BangumiSubjectCandidateData,
+        val queryIndex: Int = MAX_MATCH_SEARCH_QUERIES,
+        val resultIndex: Int = MAX_MATCH_SEARCH_RESULTS,
+        val fromSearch: Boolean = false,
+        val fromLocalCorpus: Boolean = false,
+        val localCorpusScore: Int = 0,
     )
 
     private data class SubjectCandidateMatch(
@@ -844,6 +1292,8 @@ internal class BangumiService(
         val originalTitle: String = "",
         val date: String = "",
         val company: String = "",
+        val reasonHint: String = "",
+        val conflictingPremiereYear: Boolean = false,
     )
 
     private data class MatchDiagnosis(
@@ -944,17 +1394,25 @@ internal class BangumiService(
         private const val MAX_MATCH_SEARCH_RESULTS = 10
         private const val MAX_MANUAL_CANDIDATES = 8
         private const val DEFAULT_REVIEW_LIMIT = 60
+        private const val MAX_LOCAL_CORPUS_CANDIDATES = 48
+        private const val LOCAL_BUCKET_PREFIX_LENGTH = 4
         private const val RATING_TTL_MS = 30L * 24 * 60 * 60 * 1000L
         private const val WEBSITE_MATCH_SCORE = 320
         private const val DATE_DAY_MATCH_SCORE = 260
         private const val DATE_MONTH_MATCH_SCORE = 180
         private const val DATE_YEAR_MATCH_SCORE = 90
+        private const val DATE_YEAR_MISMATCH_SCORE = 240
         private const val COMPANY_MATCH_SCORE = 220
         private const val WRITER_MATCH_SCORE = 220
+        private const val EXACT_ALIAS_METADATA_SCORE = 220
+        private const val EXACT_ALIAS_DATE_SCORE = 120
+        private const val LOCAL_CORPUS_EXACT_SCORE = 90
         private const val RESULT_RANK_SCORE = 6
         private const val QUERY_RANK_SCORE = 12
+        private const val EXACT_TITLE_ACCEPT_SCORE = 760
         private const val REVIEW_TITLE_SCORE_THRESHOLD = 720
         private const val REVIEW_ACCEPT_SCORE_THRESHOLD = 420
+        private const val SEASON_MISMATCH_SCORE = 220
 
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 

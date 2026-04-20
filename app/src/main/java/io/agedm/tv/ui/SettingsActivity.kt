@@ -11,6 +11,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.BangumiMatchCandidate
 import io.agedm.tv.data.BangumiMatchIssue
+import io.agedm.tv.data.BangumiRematchSummary
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.databinding.ActivitySettingsBinding
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +50,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.sourceOrderSettingButton.setOnClickListener { openSourceOrderSelector() }
         binding.bangumiLoginSettingButton.setOnClickListener { openBangumiAccount() }
         binding.bangumiMatchReviewSettingButton.setOnClickListener { openBangumiMatchReview() }
+        binding.bangumiRematchSettingButton.setOnClickListener { confirmBangumiRematch() }
         binding.updateSettingButton.setOnClickListener { openLatestApk() }
         binding.clearCacheSettingButton.setOnClickListener { confirmClearCache() }
         binding.clearHistorySettingButton.setOnClickListener { confirmClearHistory() }
@@ -71,6 +73,8 @@ class SettingsActivity : AppCompatActivity() {
         } else {
             "当前账号：${bangumiAccount.username}。登录失效会自动清理，可重新扫码切换，或直接退出。"
         }
+        binding.bangumiRematchValueText.text = "执行"
+        binding.bangumiRematchHintText.text = "基于本地缓存的 AGE 动画元数据，重新搜索 Bangumi 构建 subject 索引，再在本地重跑 AGE -> Bangumi 匹配。"
         lifecycleScope.launch {
             val bytes = withContext(Dispatchers.IO) { app.contentCache.sizeBytes() }
             binding.cacheSizeText.text = formatBytes(bytes)
@@ -296,6 +300,44 @@ class SettingsActivity : AppCompatActivity() {
                 showBangumiMatchReviewDialog(remaining)
             }
         }
+    }
+
+    private fun confirmBangumiRematch() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("重建 Bangumi 匹配索引")
+            .setMessage(
+                "将遍历本地已缓存的 AGE 动画元数据，重新搜索 Bangumi 构建 subject 索引，再在本地重跑 AGE -> Bangumi 匹配。\n\n这个过程会产生较多 Bangumi 搜索请求，适合在手动修正大量误配时执行。",
+            )
+            .setPositiveButton("开始") { _, _ ->
+                rebuildBangumiIndexAndRematch()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun rebuildBangumiIndexAndRematch() {
+        val progressDialog = MaterialAlertDialogBuilder(this)
+            .setTitle("正在重建 Bangumi 匹配")
+            .setMessage("正在重新搜索 Bangumi、构建本地索引并重跑匹配，请稍候...")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val summary = withContext(Dispatchers.IO) { app.ageRepository.rebuildBangumiIndexAndRematch() }
+            val issues = withContext(Dispatchers.IO) { app.ageRepository.listSuspiciousBangumiMatches() }
+            progressDialog.dismiss()
+            suspiciousBangumiMatches = issues
+            updateBangumiMatchReviewSummary(issues)
+            renderBangumiRematchResult(summary, issues.size)
+        }
+    }
+
+    private fun renderBangumiRematchResult(summary: BangumiRematchSummary, suspiciousCount: Int) {
+        val message = if (summary.ageEntries <= 0) {
+            "没有可用于重建的本地 AGE 元数据"
+        } else {
+            "已重建 ${summary.ageEntries} 项 AGE 元数据，索引 ${summary.indexedSubjects} 个 Bangumi 条目，重新匹配 ${summary.matchedEntries} 项，未命中 ${summary.missingEntries} 项，当前可疑 ${suspiciousCount} 项"
+        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     private fun confirmClearCache() {

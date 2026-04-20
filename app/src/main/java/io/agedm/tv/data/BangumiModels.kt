@@ -58,3 +58,10 @@ data class BangumiMatchCandidate(
     val title: String,
     val subtitle: String = "",
 )
+
+data class BangumiRematchSummary(
+    val ageEntries: Int,
+    val indexedSubjects: Int,
+    val matchedEntries: Int,
+    val missingEntries: Int,
+)

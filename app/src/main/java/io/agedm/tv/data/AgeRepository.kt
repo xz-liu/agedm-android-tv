@@ -262,6 +262,17 @@ class AgeRepository(
         bangumiService?.assignManualMatch(animeId, title, subjectId)
     }
 
+    suspend fun rebuildBangumiIndexAndRematch(): BangumiRematchSummary = withContext(Dispatchers.IO) {
+        backfillAgeLookupMetadataForMatchedEntries()
+        bangumiService?.rebuildSubjectIndexAndRematchAll()
+            ?: BangumiRematchSummary(
+                ageEntries = 0,
+                indexedSubjects = 0,
+                matchedEntries = 0,
+                missingEntries = 0,
+            )
+    }
+
     suspend fun alignBangumiTitlesToAge(
         titles: List<String>,
         excludeAnimeId: Long = 0L,
