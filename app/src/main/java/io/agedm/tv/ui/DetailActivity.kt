@@ -764,22 +764,18 @@ class DetailActivity : AppCompatActivity() {
     private fun bindBangumiPanel(metadata: BangumiMetadata?) {
         if (metadata == null) {
             binding.bangumiPanel.isVisible = false
-            binding.bangumiScoreSection.isVisible = false
+            binding.coverScoreGradient.isVisible = false
+            binding.coverScoreText.isVisible = false
             return
         }
 
         binding.bangumiPanel.isVisible = true
 
         val score = metadata.score
-        binding.bangumiScoreSection.isVisible = score != null
+        binding.coverScoreGradient.isVisible = score != null
+        binding.coverScoreText.isVisible = score != null
         if (score != null) {
-            binding.bangumiScoreNumber.text = metadata.scoreLabel.orEmpty()
-            val voteParts = buildList {
-                metadata.voteCount.takeIf { it > 0 }?.let { add("${it}人评分") }
-                metadata.rank?.let { add("#${it}") }
-            }
-            binding.bangumiScoreVotes.text = voteParts.joinToString(" · ")
-            binding.bangumiScoreBar.progress = ((score / 10.0) * 100).toInt()
+            binding.coverScoreText.text = metadata.scoreLabel.orEmpty()
         }
 
         if (metadata.ratingCounts.isNotEmpty()) {

@@ -11,6 +11,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.AnimeCard
+import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.databinding.ItemPosterCardBinding
 import io.agedm.tv.ui.MainActivity
 import io.agedm.tv.ui.loadPosterImage
@@ -82,6 +83,7 @@ class PosterCardAdapter(
             binding.badgeText.visibility =
                 if (item.badge.isBlank()) View.GONE else View.VISIBLE
             bindScore(item)
+            bindCollectionStatus(item)
             binding.cardRoot.tag = MainActivity.animeFocusTag(item.animeId)
             val selected = item.animeId in selectedIds
             binding.selectionScrim.visibility = if (selectionMode && selected) View.VISIBLE else View.GONE
@@ -108,14 +110,16 @@ class PosterCardAdapter(
             val cachedScore = item.bgmScore.ifBlank { scoreCache[item.animeId].orEmpty() }
             if (cachedScore.isNotBlank()) {
                 scoreCache[item.animeId] = cachedScore
-                val hasSubtitle = !binding.subtitleText.text.isNullOrBlank()
-                binding.scoreText.text = if (hasSubtitle) "$cachedScore · " else cachedScore
+                binding.scoreText.text = cachedScore
                 binding.scoreText.visibility = View.VISIBLE
+                binding.scoreGradient.visibility = View.VISIBLE
                 return
             }
 
             binding.scoreText.visibility = View.GONE
+            binding.scoreGradient.visibility = View.GONE
             val lifecycleOwner = binding.root.context.findLifecycleOwner() ?: return
+
             val app = binding.root.context.applicationContext as? AgeTvApplication ?: return
             if (!inFlightScoreIds.add(item.animeId)) return
             lifecycleOwner.lifecycleScope.launch {
@@ -133,6 +137,27 @@ class PosterCardAdapter(
                     inFlightScoreIds.remove(item.animeId)
                 }
             }
+        }
+
+        private fun bindCollectionStatus(item: AnimeCard) {
+            val app = binding.root.context.applicationContext as? AgeTvApplication
+            val status = if (app?.bangumiAccountService?.isLoggedIn() == true) {
+                app.bangumiAccountService.cachedCollectionStatus(item.animeId)
+            } else {
+                null
+            }
+            if (status == null) {
+                binding.collectionTriangle.visibility = View.GONE
+                return
+            }
+            binding.collectionTriangle.triangleColor = when (status) {
+                BangumiCollectionStatus.WISH -> Color.parseColor("#D4A843")
+                BangumiCollectionStatus.DO -> Color.parseColor("#4A90D9")
+                BangumiCollectionStatus.COLLECT -> Color.parseColor("#52B76A")
+                BangumiCollectionStatus.ON_HOLD -> Color.parseColor("#D05050")
+                BangumiCollectionStatus.DROPPED -> Color.parseColor("#8090A0")
+            }
+            binding.collectionTriangle.visibility = View.VISIBLE
         }
     }
 

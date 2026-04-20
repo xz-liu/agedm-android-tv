@@ -21,24 +21,50 @@
             android:background="@drawable/bg_image_placeholder"
             android:scaleType="centerCrop" />
 
+        <View
+            android:id="@+id/scoreGradient"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_gravity="bottom"
+            android:background="@drawable/bg_poster_score_gradient"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/scoreText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_marginBottom="7dp"
+            android:layout_marginStart="8dp"
+            android:textColor="@color/age_text"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/badgeText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|start"
-            android:layout_margin="8dp"
+            android:layout_margin="6dp"
             android:background="@drawable/bg_badge"
             android:ellipsize="end"
             android:maxLines="1"
-            android:paddingStart="8dp"
-            android:paddingTop="4dp"
-            android:paddingEnd="8dp"
-            android:paddingBottom="4dp"
+            android:paddingStart="7dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="7dp"
+            android:paddingBottom="3dp"
             android:textColor="@color/age_text"
             android:textSize="11sp"
             android:textStyle="bold"
             android:visibility="gone" />
 
+        <io.agedm.tv.ui.CornerTriangleView
+            android:id="@+id/collectionTriangle"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="top|end"
+            android:visibility="gone" />
 
         <View
             android:id="@+id/selectionScrim"
@@ -75,29 +101,13 @@
         android:textSize="14sp"
         android:textStyle="bold" />
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/subtitleText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="3dp"
-        android:orientation="horizontal">
-
-        <TextView
-            android:id="@+id/scoreText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="@color/age_focus"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/subtitleText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textColor="@color/age_text_muted"
-            android:textSize="11sp" />
-    </LinearLayout>
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/age_text_muted"
+        android:textSize="11sp" />
 </LinearLayout>
