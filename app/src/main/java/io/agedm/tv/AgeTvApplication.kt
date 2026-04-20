@@ -30,7 +30,12 @@ class AgeTvApplication : Application() {
         ContentCache(File(cacheDir, "content")).also { it.evictExpired() }
     }
 
-    val ageRepository: AgeRepository by lazy { AgeRepository(cache = contentCache) }
+    val ageRepository: AgeRepository by lazy {
+        AgeRepository(
+            cache = contentCache,
+            persistentDir = File(filesDir, "metadata"),
+        )
+    }
 
     val linkCastManager: LinkCastManager by lazy { LinkCastManager(ageRepository) }
 }

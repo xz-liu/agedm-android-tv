@@ -3,6 +3,9 @@ package io.agedm.tv.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.util.TypedValue
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
@@ -18,6 +21,8 @@ import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AgeRelatedItem
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.AnimeDetail
+import io.agedm.tv.data.BangumiComment
+import io.agedm.tv.data.BangumiMetadata
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.SUPPLEMENTAL_PROVIDER_IDS
@@ -40,6 +45,7 @@ class DetailActivity : AppCompatActivity() {
     private lateinit var episodeAdapter: EpisodeAdapter
     private lateinit var relatedAdapter: PosterCardAdapter
     private lateinit var similarAdapter: PosterCardAdapter
+    private lateinit var bangumiSimilarAdapter: PosterCardAdapter
 
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -79,6 +85,7 @@ class DetailActivity : AppCompatActivity() {
         episodeAdapter = EpisodeAdapter(::onEpisodeSelected)
         relatedAdapter = PosterCardAdapter { openDetail(it.animeId) }
         similarAdapter = PosterCardAdapter { openDetail(it.animeId) }
+        bangumiSimilarAdapter = PosterCardAdapter { openDetail(it.animeId) }
 
         binding.sourceRecycler.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
@@ -98,6 +105,11 @@ class DetailActivity : AppCompatActivity() {
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
         binding.similarRecycler.adapter = similarAdapter
         binding.similarRecycler.itemAnimator = null
+
+        binding.bangumiSimilarRecycler.layoutManager =
+            LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+        binding.bangumiSimilarRecycler.adapter = bangumiSimilarAdapter
+        binding.bangumiSimilarRecycler.itemAnimator = null
     }
 
     private fun setupButtons() {
@@ -206,6 +218,7 @@ class DetailActivity : AppCompatActivity() {
         binding.tagsText.text = buildTagsLine(loadedDetail)
         binding.introText.text = htmlToPlainText(loadedDetail.introHtml).ifBlank { "暂无简介" }
         binding.coverImage.loadPosterImage(loadedDetail.cover)
+        bindBangumiPanel(loadedDetail.bangumi)
 
         val record = app.playbackStore.getRecord(loadedDetail.animeId)
         val resolvedSourceKey = preferredSourceKey ?: record?.sourceKey ?: loadedDetail.sources.firstOrNull()?.key
@@ -650,6 +663,79 @@ class DetailActivity : AppCompatActivity() {
         binding.detailScrollView.isVisible = false
         binding.errorText.isVisible = true
         binding.errorText.text = message
+    }
+
+    private fun bindBangumiPanel(metadata: BangumiMetadata?) {
+        if (metadata == null) {
+            binding.bangumiPanel.isVisible = false
+            return
+        }
+
+        binding.bangumiPanel.isVisible = true
+        val summaryParts = buildList {
+            metadata.scoreLabel?.let { add("Bangumi $it") }
+            metadata.voteCount.takeIf { it > 0 }?.let { add("${it}人评分") }
+            metadata.rank?.let { add("#$it") }
+        }
+        binding.bangumiSummaryText.text = summaryParts.joinToString(" · ")
+            .ifBlank { getString(io.agedm.tv.R.string.bangumi_empty) }
+
+        binding.bangumiDistributionText.text = metadata.ratingCounts.entries
+            .sortedByDescending { it.key }
+            .joinToString("  ") { (score, count) -> "${score}分 $count" }
+            .ifBlank { "评分分布暂缺" }
+
+        binding.bangumiTagsText.text = metadata.tags
+            .joinToString(" · ") { tag -> "${tag.name} ${tag.count}" }
+            .ifBlank { "标签暂缺" }
+
+        binding.bangumiStaffText.text = metadata.staff
+            .joinToString("\n") { role ->
+                "${role.role} · ${role.names.joinToString("、")}"
+            }
+            .ifBlank { "制作人员信息暂缺" }
+
+        bindBangumiComments(metadata.comments)
+        bangumiSimilarAdapter.submitList(metadata.similar.map(::toCard))
+        binding.bangumiSimilarTitle.isVisible = metadata.similar.isNotEmpty()
+        binding.bangumiSimilarRecycler.isVisible = metadata.similar.isNotEmpty()
+    }
+
+    private fun bindBangumiComments(comments: List<BangumiComment>) {
+        binding.bangumiCommentsContainer.removeAllViews()
+        binding.bangumiCommentsTitle.isVisible = comments.isNotEmpty()
+        binding.bangumiCommentsContainer.isVisible = comments.isNotEmpty()
+        comments.forEachIndexed { index, comment ->
+            val view = TextView(this).apply {
+                setBackgroundResource(io.agedm.tv.R.drawable.bg_panel_soft)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setTextColor(getColor(io.agedm.tv.R.color.age_text))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setLineSpacing(0f, 1.12f)
+                text = buildCommentText(comment)
+            }
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                if (index > 0) topMargin = dp(8)
+            }
+            binding.bangumiCommentsContainer.addView(view, params)
+        }
+    }
+
+    private fun buildCommentText(comment: BangumiComment): String {
+        val headline = buildList {
+            add(comment.user)
+            comment.state.takeIf { it.isNotBlank() }?.let(::add)
+            comment.time.takeIf { it.isNotBlank() }?.let(::add)
+            comment.score?.let { add("${it}分") }
+        }.joinToString(" · ")
+        return "$headline\n${comment.content}"
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density + 0.5f).toInt()
     }
 
     private fun buildTagsLine(detail: AnimeDetail): String {

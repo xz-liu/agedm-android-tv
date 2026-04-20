@@ -1,5 +1,6 @@
 package io.agedm.tv.data
 
+import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,6 +15,7 @@ import org.jsoup.Jsoup
 @OptIn(ExperimentalSerializationApi::class)
 class AgeRepository(
     private val cache: ContentCache? = null,
+    private val persistentDir: File? = null,
     private val client: OkHttpClient = OkHttpClient.Builder().build(),
     private val json: Json = Json {
         ignoreUnknownKeys = true
@@ -27,6 +29,16 @@ class AgeRepository(
             json = json,
         )
     }
+    private val bangumiService by lazy {
+        persistentDir?.let { dir ->
+            BangumiService(
+                store = PersistentJsonStore(dir),
+                client = client,
+                json = json,
+                alignToAge = ::alignBangumiSubjectToAge,
+            )
+        }
+    }
 
     suspend fun fetchDetail(animeId: Long, forceRefresh: Boolean = false): AnimeDetail = withContext(Dispatchers.IO) {
         val body = cachedGet(
@@ -39,7 +51,17 @@ class AgeRepository(
         val desktopRecommendations = runCatching {
             fetchDesktopRecommendations(animeId, forceRefresh)
         }.getOrElse { emptyList() }
-        val detail = response.toAnimeDetail(desktopRecommendations)
+        val bangumi = runCatching {
+            bangumiService?.fetch(
+                animeId = animeId,
+                title = response.video.name,
+                forceRefresh = forceRefresh,
+            )
+        }.getOrNull()
+        val detail = response.toAnimeDetail(
+            desktopRecommendations = desktopRecommendations,
+            bangumi = bangumi,
+        )
         val supplementalSources = supplementalSourceService.loadCachedSources(animeId)
         if (supplementalSources.isEmpty()) {
             detail
@@ -137,6 +159,26 @@ class AgeRepository(
         )
     }
 
+    suspend fun peekBangumiMetadata(animeId: Long): BangumiMetadata? = withContext(Dispatchers.IO) {
+        bangumiService?.peek(animeId)
+    }
+
+    suspend fun ensureBangumiMetadata(
+        animeId: Long,
+        title: String,
+        forceRefresh: Boolean = false,
+    ): BangumiMetadata? = withContext(Dispatchers.IO) {
+        bangumiService?.fetch(animeId, title, forceRefresh)
+    }
+
+    fun peekBangumiScore(animeId: Long): String? {
+        return bangumiService?.peek(animeId)?.scoreLabel
+    }
+
+    suspend fun ensureBangumiScore(animeId: Long, title: String): String? = withContext(Dispatchers.IO) {
+        bangumiService?.fetchScore(animeId, title)
+    }
+
     suspend fun peekHomeFeed(): HomeFeed? = withContext(Dispatchers.IO) {
         peekCached(homeCacheKey(), ::decodeHomeFeed)
     }
@@ -174,7 +216,10 @@ class AgeRepository(
     suspend fun peekDetail(animeId: Long): AnimeDetail? = withContext(Dispatchers.IO) {
         peekCached("detail_$animeId") { body ->
             val response = json.decodeFromString<AgeDetailResponse>(body)
-            val detail = response.toAnimeDetail(emptyList())
+            val detail = response.toAnimeDetail(
+                desktopRecommendations = emptyList(),
+                bangumi = bangumiService?.peek(animeId),
+            )
             val supplementalSources = supplementalSourceService.loadCachedSources(animeId)
             if (supplementalSources.isEmpty()) {
                 detail
@@ -430,7 +475,76 @@ class AgeRepository(
 
     private fun rankCacheKey(year: String): String = "rank_$year"
 
-    private fun AgeDetailResponse.toAnimeDetail(desktopRecommendations: List<AgeRelatedItem>): AnimeDetail {
+    private suspend fun alignBangumiSubjectToAge(
+        titles: List<String>,
+        excludeAnimeId: Long,
+    ): AgeRelatedItem? {
+        val cleanedTitles = titles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanedTitles.isEmpty()) return null
+
+        var bestCard: AnimeCard? = null
+        var bestScore = 0
+        for (query in cleanedTitles) {
+            val results = runCatching { search(query = query, page = 1, size = 12) }
+                .getOrNull()
+                ?.items
+                .orEmpty()
+            for (candidate in results) {
+                if (candidate.animeId == excludeAnimeId) continue
+                val score = scoreBangumiAlignment(
+                    titles = cleanedTitles,
+                    candidateTitle = candidate.title,
+                )
+                if (score > bestScore) {
+                    bestScore = score
+                    bestCard = candidate
+                }
+            }
+        }
+
+        val matched = bestCard?.takeIf { bestScore > 0 } ?: return null
+        return AgeRelatedItem(
+            animeId = matched.animeId,
+            title = matched.title,
+            cover = matched.cover,
+            updateLabel = matched.badge,
+        )
+    }
+
+    private fun scoreBangumiAlignment(
+        titles: List<String>,
+        candidateTitle: String,
+    ): Int {
+        val normalizedCandidate = normalizeBangumiLookupTitle(candidateTitle)
+        if (normalizedCandidate.isBlank()) return 0
+
+        var best = 0
+        titles.forEach { rawTitle ->
+            val normalizedTitle = normalizeBangumiLookupTitle(rawTitle)
+            if (normalizedTitle.isBlank()) return@forEach
+            var score = 0
+            if (normalizedTitle == normalizedCandidate) score += 1000
+            if (normalizedCandidate.contains(normalizedTitle) || normalizedTitle.contains(normalizedCandidate)) {
+                score += 360
+            }
+            val commonPrefix = normalizedTitle.zip(normalizedCandidate)
+                .takeWhile { it.first == it.second }
+                .count()
+            score += commonPrefix * 8
+            if (score > best) best = score
+        }
+        return best
+    }
+
+    private fun normalizeBangumiLookupTitle(value: String): String {
+        return value.lowercase()
+            .replace(Regex("[\\s·:：\\-_/\\\\|()（）\\[\\]【】《》\"'`!！?？,.，。]+"), "")
+    }
+
+    private fun AgeDetailResponse.toAnimeDetail(
+        desktopRecommendations: List<AgeRelatedItem>,
+        bangumi: BangumiMetadata?,
+    ): AnimeDetail {
         val vipSources = playerVipRaw.split(",")
             .map { it.trim() }
             .filter { it.isNotBlank() }
@@ -470,6 +584,7 @@ class AgeRepository(
             introHtml = video.introHtml,
             status = video.status,
             tags = video.tags,
+            bangumi = bangumi,
             sources = sources,
             related = series,
             similar = desktopRecommendations.ifEmpty { similar },
@@ -485,6 +600,7 @@ class AgeRepository(
             cover = cover,
             badge = updateLabel,
             subtitle = "",
+            bgmScore = peekBangumiScore(animeId).orEmpty(),
         )
     }
 
@@ -498,6 +614,7 @@ class AgeRepository(
                 cover = buildCoverUrl(id),
                 badge = latestCard.badge.ifBlank { "已更新" },
                 subtitle = "",
+                bgmScore = peekBangumiScore(id).orEmpty(),
             )
         } else {
             // Not yet aired: show scheduled local air time (converted from CST).
@@ -507,6 +624,7 @@ class AgeRepository(
                 cover = buildCoverUrl(id),
                 badge = "",
                 subtitle = formatLocalAirTime(mtime, nameForNew),
+                bgmScore = peekBangumiScore(id).orEmpty(),
             )
         }
     }
@@ -541,6 +659,7 @@ class AgeRepository(
             description = tags.orEmpty()
                 .ifBlank { writer.orEmpty() }
                 .ifBlank { company.orEmpty() },
+            bgmScore = peekBangumiScore(id).orEmpty(),
         )
     }
 
@@ -551,6 +670,7 @@ class AgeRepository(
             cover = buildCoverUrl(animeId),
             badge = "#$order",
             subtitle = "$rankTitle · $countLabel",
+            bgmScore = peekBangumiScore(animeId).orEmpty(),
         )
     }
 

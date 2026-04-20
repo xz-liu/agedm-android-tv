@@ -40,4 +40,8 @@
     <string name="section_episodes">剧集列表</string>
     <string name="section_related">系列作品</string>
     <string name="section_similar">相似推荐</string>
+    <string name="section_bangumi">Bangumi 情报</string>
+    <string name="section_bangumi_comments">Bangumi 吐槽箱</string>
+    <string name="section_bangumi_similar">Bangumi 推荐</string>
+    <string name="bangumi_empty">Bangumi 信息暂未获取</string>
 </resources>

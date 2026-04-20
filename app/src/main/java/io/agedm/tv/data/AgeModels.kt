@@ -61,6 +61,7 @@ data class AnimeDetail(
     val introHtml: String,
     val status: String,
     val tags: String,
+    val bangumi: BangumiMetadata? = null,
     val sources: List<EpisodeSource>,
     val related: List<AgeRelatedItem>,
     val similar: List<AgeRelatedItem>,
@@ -205,6 +206,7 @@ data class AnimeCard(
     val badge: String = "",
     val subtitle: String = "",
     val description: String = "",
+    val bgmScore: String = "",
 )
 
 data class PagedCards(
