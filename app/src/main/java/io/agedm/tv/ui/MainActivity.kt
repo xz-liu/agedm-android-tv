@@ -25,6 +25,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.R
@@ -35,6 +36,7 @@ import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.data.BrowseSection
 import io.agedm.tv.data.CatalogQuery
 import io.agedm.tv.data.MirrorState
+import io.agedm.tv.data.PagedCards
 import io.agedm.tv.data.PlaybackRecord
 import io.agedm.tv.databinding.ActivityMainBinding
 import io.agedm.tv.ui.adapter.BrowseSectionAdapter
@@ -91,6 +93,7 @@ class MainActivity : AppCompatActivity() {
     private var rankYear = "all"
     private var navIndicator: View? = null
     private var loadJob: Job? = null
+    private var appendJob: Job? = null
     private var loadRequestId: Long = 0L
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
@@ -101,6 +104,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingFocusRestoreAnimeId: Long? = null
     private var selectionMode = false
     private var currentVisibleCards: List<AnimeCard> = emptyList()
+    private var isAppendingGridPage = false
     private val selectedAnimeIds = linkedSetOf<Long>()
     private val navButtons: List<Button>
         get() = listOf(
@@ -187,16 +191,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupChrome() {
-        binding.prevPageButton.setOnClickListener {
-            if (currentPage > 1) {
-                openScreen(currentScreen, currentPage - 1)
-            }
-        }
-        binding.nextPageButton.setOnClickListener {
-            if (currentPage * currentPageSize < currentTotal) {
-                openScreen(currentScreen, currentPage + 1)
-            }
-        }
+        binding.paginationBar.isVisible = false
     }
 
     private fun setupBottomNav() {
@@ -269,6 +264,9 @@ class MainActivity : AppCompatActivity() {
             if (event.keyCode != KeyEvent.KEYCODE_DPAD_UP || focused == null || !isInNavArea(focused)) {
                 lastNavUpPressUptimeMs = 0L
             }
+            if (focused != null && event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && handleInfiniteGridDownPress(focused)) {
+                return true
+            }
             if (focused != null && shouldBlockEdgeNavigation(focused, event.keyCode)) {
                 return true
             }
@@ -333,12 +331,9 @@ class MainActivity : AppCompatActivity() {
     private fun openScreen(screen: Screen, page: Int = 1) {
         clearNavFocusSwitchArm()
         exitSelectionMode(silent = true)
-        slideFromRight = when {
-            page != currentPage -> page > currentPage
-            else -> screen.navIndex() >= currentScreen.navIndex()
-        }
+        slideFromRight = screen.navIndex() >= currentScreen.navIndex()
         currentScreen = screen
-        currentPage = page
+        currentPage = page.coerceAtLeast(1)
         currentPageSize = when (screen) {
             Screen.CAST -> 0
             Screen.SEARCH -> 24
@@ -349,12 +344,12 @@ class MainActivity : AppCompatActivity() {
         when (screen) {
             Screen.CAST -> loadCast()
             Screen.HOME -> loadHome()
-            Screen.CATALOG -> loadCatalog(page)
+            Screen.CATALOG -> loadCatalog()
             Screen.RECOMMEND -> loadRecommend()
-            Screen.UPDATE -> loadUpdate(page)
+            Screen.UPDATE -> loadUpdate()
             Screen.RANK -> loadRank()
             Screen.HISTORY -> loadHistory()
-            Screen.SEARCH -> loadSearch(page)
+            Screen.SEARCH -> loadSearch()
         }
     }
 
@@ -411,25 +406,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadCatalog(page: Int) {
-        catalogQuery = catalogQuery.copy(page = page, size = 30)
+    private fun loadCatalog() {
+        catalogQuery = catalogQuery.copy(page = 1, size = 30)
         applyFilterActions(catalogFilterActions(), showReset = true) {
             catalogQuery = CatalogQuery()
             openScreen(Screen.CATALOG)
         }
-        updatePagination(visible = false)
         val query = catalogQuery
-        launchStaleFirstLoad(
+        loadPagedGridFirstPage(
             loadingMessage = "正在加载目录...",
             errorPrefix = "目录加载失败",
+            emptyMessage = "当前筛选下没有结果",
             peek = { app.ageRepository.peekCatalog(query) },
             fetch = { app.ageRepository.fetchCatalog(query) },
-        ) { result, animate ->
-            currentTotal = result.total
-            currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "当前筛选下没有结果", animate = animate)
-            updatePagination(visible = result.total > result.size)
-        }
+        )
     }
 
     private fun loadRecommend() {
@@ -447,20 +437,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadUpdate(page: Int) {
+    private fun loadUpdate() {
         applyFilterActions(emptyList(), showReset = false)
-        updatePagination(visible = false)
-        launchStaleFirstLoad(
+        loadPagedGridFirstPage(
             loadingMessage = "正在加载更新...",
             errorPrefix = "更新加载失败",
-            peek = { app.ageRepository.peekUpdate(page = page, size = 30) },
-            fetch = { app.ageRepository.fetchUpdate(page = page, size = 30) },
-        ) { result, animate ->
-            currentTotal = result.total
-            currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "更新区暂时没有内容", animate = animate)
-            updatePagination(visible = result.total > result.size)
-        }
+            emptyMessage = "更新区暂时没有内容",
+            peek = { app.ageRepository.peekUpdate(page = 1, size = 30) },
+            fetch = { app.ageRepository.fetchUpdate(page = 1, size = 30) },
+        )
     }
 
     private fun loadRank() {
@@ -569,24 +554,54 @@ class MainActivity : AppCompatActivity() {
         return listOf(BrowseSection("本地继续观看", "电视端播放记录", localHistory))
     }
 
-    private fun loadSearch(page: Int) {
+    private fun loadSearch() {
         val query = currentSearchQuery?.trim().orEmpty()
         if (query.isBlank()) {
             showSearchDialog()
             return
         }
         applyFilterActions(emptyList(), showReset = false)
-        updatePagination(visible = false)
-        launchStaleFirstLoad(
+        loadPagedGridFirstPage(
             loadingMessage = "正在搜索「$query」...",
             errorPrefix = "搜索失败",
-            peek = { app.ageRepository.peekSearch(query = query, page = page, size = 24) },
-            fetch = { app.ageRepository.search(query = query, page = page, size = 24) },
-        ) { result, animate ->
-            currentTotal = result.total
-            currentPageSize = result.size
-            showGrid(result.items, emptyMessage = "没有搜索到相关动画", animate = animate)
-            updatePagination(visible = result.total > result.size)
+            emptyMessage = "没有搜索到相关动画",
+            peek = { app.ageRepository.peekSearch(query = query, page = 1, size = 24) },
+            fetch = { app.ageRepository.search(query = query, page = 1, size = 24) },
+        )
+    }
+
+    private fun loadPagedGridFirstPage(
+        loadingMessage: String,
+        errorPrefix: String,
+        emptyMessage: String,
+        peek: suspend () -> PagedCards?,
+        fetch: suspend () -> PagedCards,
+    ) {
+        updatePagination(visible = false)
+        val requestId = replaceLoadRequest()
+        currentPage = 1
+        currentTotal = 0
+        isAppendingGridPage = false
+        loadJob = lifecycleScope.launch {
+            var showingCached = false
+            try {
+                val cached = peek()
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                if (cached != null) {
+                    applyPagedGridResult(cached, emptyMessage = emptyMessage, animate = true, append = false)
+                    showingCached = true
+                    delay(STALE_REFRESH_DELAY_MS)
+                    if (!shouldHandleLoadResult(requestId)) return@launch
+                } else {
+                    renderLoading(loadingMessage)
+                }
+
+                val fresh = fetch()
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                applyPagedGridResult(fresh, emptyMessage = emptyMessage, animate = !showingCached, append = false)
+            } catch (error: Throwable) {
+                handleLoadFailure(requestId, errorPrefix, error, preserveContent = showingCached)
+            }
         }
     }
 
@@ -619,6 +634,22 @@ class MainActivity : AppCompatActivity() {
                 handleLoadFailure(requestId, errorPrefix, error, preserveContent = showingCached)
             }
         }
+    }
+
+    private fun applyPagedGridResult(
+        result: PagedCards,
+        emptyMessage: String,
+        animate: Boolean,
+        append: Boolean,
+    ) {
+        currentTotal = result.total
+        currentPage = result.page.coerceAtLeast(1)
+        currentPageSize = result.size.coerceAtLeast(1)
+        if (!append) {
+            showGrid(result.items, emptyMessage = emptyMessage, animate = animate)
+            return
+        }
+        appendGrid(result.items, emptyMessage)
     }
 
     private fun buildHomeSections(feed: io.agedm.tv.data.HomeFeed): List<BrowseSection> {
@@ -655,8 +686,7 @@ class MainActivity : AppCompatActivity() {
         prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
-        binding.contentRecycler.layoutManager = GridLayoutManager(this, 6)
-        binding.contentRecycler.adapter = gridAdapter
+        ensureGridRecycler()
         currentVisibleCards = items
         configureBrowseSelection()
         gridAdapter.submitList(items)
@@ -664,6 +694,28 @@ class MainActivity : AppCompatActivity() {
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
         if (animate) animateContentIn(binding.contentRecycler)
+    }
+
+    private fun appendGrid(items: List<AnimeCard>, emptyMessage: String) {
+        prepareBrowseContent()
+        binding.loadingLayout.isVisible = false
+        binding.contentRecycler.isVisible = true
+        ensureGridRecycler()
+        currentVisibleCards = currentVisibleCards + items
+        gridAdapter.appendList(items)
+        binding.emptyStateText.isVisible = currentVisibleCards.isEmpty()
+        binding.emptyStateText.text = emptyMessage
+        updateFocusTargets()
+    }
+
+    private fun ensureGridRecycler() {
+        val gridLayout = binding.contentRecycler.layoutManager as? GridLayoutManager
+        if (gridLayout == null || gridLayout.spanCount != GRID_SPAN_COUNT) {
+            binding.contentRecycler.layoutManager = GridLayoutManager(this, GRID_SPAN_COUNT)
+        }
+        if (binding.contentRecycler.adapter !== gridAdapter) {
+            binding.contentRecycler.adapter = gridAdapter
+        }
     }
 
     private fun prepareBrowseContent() {
@@ -720,6 +772,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun replaceLoadRequest(): Long {
         loadJob?.cancel()
+        appendJob?.cancel()
+        isAppendingGridPage = false
         return ++loadRequestId
     }
 
@@ -806,8 +860,8 @@ class MainActivity : AppCompatActivity() {
         return rect
     }
 
-    private fun updatePagination(visible: Boolean) {
-        binding.paginationBar.isVisible = visible
+    private fun updatePagination(@Suppress("UNUSED_PARAMETER") visible: Boolean) {
+        binding.paginationBar.isVisible = false
         binding.pageIndicator.text = "第 $currentPage 页 / 共 ${maxOf(1, totalPages())} 页"
         binding.prevPageButton.isEnabled = currentPage > 1
         binding.nextPageButton.isEnabled = currentPage * currentPageSize < currentTotal
@@ -1013,6 +1067,20 @@ class MainActivity : AppCompatActivity() {
         navFocusSwitchArmDeadlineMs = 0L
     }
 
+    private fun handleInfiniteGridDownPress(focused: View): Boolean {
+        if (!supportsInfiniteGridPaging()) return false
+        if (!isDescendantOf(focused, binding.contentRecycler)) return false
+        if (!isBlockedDirectionalFocus(focused, View.FOCUS_DOWN)) return false
+        if (!hasMoreGridPages()) return false
+        if (isAppendingGridPage) return true
+        if (loadJob?.isActive == true) {
+            showOverlayMessage("正在刷新列表...")
+            return true
+        }
+        appendNextGridPage(focused)
+        return true
+    }
+
     private fun shouldBlockEdgeNavigation(focused: View, keyCode: Int): Boolean {
         if (isInNavArea(focused)) {
             return keyCode == KeyEvent.KEYCODE_DPAD_UP
@@ -1025,6 +1093,10 @@ class MainActivity : AppCompatActivity() {
             else -> return false
         }
 
+        return isBlockedDirectionalFocus(focused, direction)
+    }
+
+    private fun isBlockedDirectionalFocus(focused: View, direction: Int): Boolean {
         val next = focused.focusSearch(direction) ?: return true
         if (next === focused) return true
         if (isInNavArea(next)) return true
@@ -1036,6 +1108,117 @@ class MainActivity : AppCompatActivity() {
             View.FOCUS_RIGHT -> nextRect.centerX() <= focusedRect.centerX()
             View.FOCUS_DOWN -> nextRect.centerY() <= focusedRect.centerY()
             else -> false
+        }
+    }
+
+    private fun supportsInfiniteGridPaging(): Boolean {
+        return currentScreen == Screen.CATALOG ||
+            currentScreen == Screen.UPDATE ||
+            currentScreen == Screen.SEARCH
+    }
+
+    private fun hasMoreGridPages(): Boolean {
+        return supportsInfiniteGridPaging() &&
+            currentPageSize > 0 &&
+            currentTotal > 0 &&
+            currentPage * currentPageSize < currentTotal
+    }
+
+    private fun appendNextGridPage(focused: View) {
+        val requestId = loadRequestId
+        val nextPage = currentPage + 1
+        val startIndex = currentVisibleCards.size
+        val targetColumn = currentGridAdapterPosition(focused)
+            ?.let { position ->
+                val spanCount = (binding.contentRecycler.layoutManager as? GridLayoutManager)?.spanCount ?: 1
+                position % spanCount
+            }
+            ?: 0
+        isAppendingGridPage = true
+        showOverlayMessage("正在加载更多...")
+        appendJob?.cancel()
+        appendJob = lifecycleScope.launch {
+            try {
+                val result = fetchGridPage(nextPage)
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                if (result.items.isEmpty()) {
+                    currentTotal = currentVisibleCards.size
+                    return@launch
+                }
+                applyPagedGridResult(result, emptyMessage = currentGridEmptyMessage(), animate = false, append = true)
+                val targetIndex = (startIndex + targetColumn).coerceAtMost(currentVisibleCards.lastIndex)
+                val targetAnimeId = currentVisibleCards.getOrNull(targetIndex)?.animeId
+                if (targetAnimeId != null) {
+                    focusGridItem(targetIndex, targetAnimeId)
+                }
+            } catch (error: Throwable) {
+                if (!shouldHandleLoadResult(requestId) || isCancellationError(error)) return@launch
+                val prefix = currentLoadMoreErrorPrefix()
+                val message = error.message?.takeIf { it.isNotBlank() }?.let { "$prefix：$it" } ?: prefix
+                showOverlayMessage(message)
+            } finally {
+                isAppendingGridPage = false
+            }
+        }
+    }
+
+    private suspend fun fetchGridPage(page: Int): PagedCards {
+        return when (currentScreen) {
+            Screen.CATALOG -> app.ageRepository.fetchCatalog(catalogQuery.copy(page = page, size = 30))
+            Screen.UPDATE -> app.ageRepository.fetchUpdate(page = page, size = 30)
+            Screen.SEARCH -> app.ageRepository.search(
+                query = currentSearchQuery?.trim().orEmpty(),
+                page = page,
+                size = 24,
+            )
+            else -> error("Current screen does not support infinite paging")
+        }
+    }
+
+    private fun currentGridEmptyMessage(): String {
+        return when (currentScreen) {
+            Screen.CATALOG -> "当前筛选下没有结果"
+            Screen.UPDATE -> "更新区暂时没有内容"
+            Screen.SEARCH -> "没有搜索到相关动画"
+            else -> ""
+        }
+    }
+
+    private fun currentLoadMoreErrorPrefix(): String {
+        return when (currentScreen) {
+            Screen.CATALOG -> "加载更多目录失败"
+            Screen.UPDATE -> "加载更多更新失败"
+            Screen.SEARCH -> "加载更多搜索结果失败"
+            else -> "加载更多失败"
+        }
+    }
+
+    private fun currentGridAdapterPosition(focused: View): Int? {
+        var target: View? = focused
+        while (target != null) {
+            val holder = binding.contentRecycler.findContainingViewHolder(target)
+            val position = holder?.bindingAdapterPosition ?: RecyclerView.NO_POSITION
+            if (position != RecyclerView.NO_POSITION) {
+                return position
+            }
+            target = target.parent as? View
+        }
+        return null
+    }
+
+    private fun focusGridItem(position: Int, animeId: Long) {
+        val layoutManager = binding.contentRecycler.layoutManager as? GridLayoutManager ?: return
+        pendingFocusRestoreAnimeId = animeId
+        binding.contentRecycler.post {
+            layoutManager.scrollToPositionWithOffset(position, 0)
+            binding.contentRecycler.post {
+                if (!restorePendingAnimeFocusIfPossible()) {
+                    binding.contentRecycler.smoothScrollToPosition(position)
+                    binding.contentRecycler.post {
+                        restorePendingAnimeFocusIfPossible()
+                    }
+                }
+            }
         }
     }
 
@@ -1320,6 +1503,7 @@ class MainActivity : AppCompatActivity() {
         private const val NAV_FOCUS_ARM_WINDOW_MS = 600L
         private const val SETTINGS_SHORTCUT_WINDOW_MS = 1_100L
         private const val STALE_REFRESH_DELAY_MS = 180L
+        private const val GRID_SPAN_COUNT = 6
         private const val ANIME_FOCUS_TAG_PREFIX = "anime-card:"
 
         fun createIntent(context: Context, route: AgeRoute? = null): Intent {

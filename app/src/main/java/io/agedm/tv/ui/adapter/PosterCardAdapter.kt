@@ -43,6 +43,18 @@ class PosterCardAdapter(
         notifyDataSetChanged()
     }
 
+    fun appendList(cards: List<AnimeCard>) {
+        if (cards.isEmpty()) return
+        val start = items.size
+        items = items + cards
+        cards.forEach { card ->
+            if (card.bgmScore.isNotBlank()) {
+                scoreCache[card.animeId] = card.bgmScore
+            }
+        }
+        notifyItemRangeInserted(start, cards.size)
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PosterViewHolder {
         val binding = ItemPosterCardBinding.inflate(LayoutInflater.from(parent.context), parent, false)
         return PosterViewHolder(binding)
