@@ -45,8 +45,9 @@ class PosterCardAdapter(
     }
 
     fun submitList(cards: List<AnimeCard>) {
-        items = cards
-        cards.forEach { card ->
+        val deduplicated = cards.distinctBy { it.animeId }
+        items = deduplicated
+        deduplicated.forEach { card ->
             if (card.bgmScore.isNotBlank()) {
                 scoreCache[card.animeId] = card.bgmScore
             }
@@ -57,15 +58,17 @@ class PosterCardAdapter(
 
     fun appendList(cards: List<AnimeCard>) {
         if (cards.isEmpty()) return
+        val appended = cards.filter { it.animeId !in indexByAnimeId }
+        if (appended.isEmpty()) return
         val start = items.size
-        items = items + cards
-        cards.forEach { card ->
+        items = items + appended
+        appended.forEach { card ->
             if (card.bgmScore.isNotBlank()) {
                 scoreCache[card.animeId] = card.bgmScore
             }
         }
         rebuildIndex(start)
-        notifyItemRangeInserted(start, cards.size)
+        notifyItemRangeInserted(start, appended.size)
     }
 
     fun updateSelectionState(

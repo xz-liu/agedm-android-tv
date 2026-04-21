@@ -689,10 +689,10 @@ class MainActivity : AppCompatActivity() {
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
         ensureGridRecycler()
-        currentVisibleCards = items
+        currentVisibleCards = items.distinctBy { it.animeId }
         configureBrowseSelection()
-        gridAdapter.submitList(items)
-        binding.emptyStateText.isVisible = items.isEmpty()
+        gridAdapter.submitList(currentVisibleCards)
+        binding.emptyStateText.isVisible = currentVisibleCards.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
         if (animate) animateContentIn(binding.contentRecycler)
@@ -703,8 +703,16 @@ class MainActivity : AppCompatActivity() {
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
         ensureGridRecycler()
-        currentVisibleCards = currentVisibleCards + items
-        gridAdapter.appendList(items)
+        val existingIds = currentVisibleCards.asSequence().map { it.animeId }.toHashSet()
+        val appendedItems = items
+            .asSequence()
+            .filter { it.animeId !in existingIds }
+            .distinctBy { it.animeId }
+            .toList()
+        if (appendedItems.isNotEmpty()) {
+            currentVisibleCards = currentVisibleCards + appendedItems
+            gridAdapter.appendList(appendedItems)
+        }
         binding.emptyStateText.isVisible = currentVisibleCards.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
@@ -1394,6 +1402,7 @@ class MainActivity : AppCompatActivity() {
     private fun configureBrowseSelection(
         focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId(),
         changedAnimeIds: Collection<Long> = emptyList(),
+        restoreFocus: Boolean = changedAnimeIds.isEmpty(),
     ) {
         pendingFocusRestoreAnimeId = focusAnimeId
         val enabled = canUseBatchSelection()
@@ -1412,7 +1421,7 @@ class MainActivity : AppCompatActivity() {
             gridAdapter -> gridAdapter.refreshSelection(changedAnimeIds)
             sectionAdapter -> sectionAdapter.updateSelectionState(selectionEnabled, selected, changedAnimeIds)
         }
-        if (changedAnimeIds.isEmpty()) {
+        if (restoreFocus) {
             binding.contentRecycler.post {
                 restorePendingAnimeFocusIfPossible()
             }
@@ -1464,7 +1473,11 @@ class MainActivity : AppCompatActivity() {
         pendingFocusRestoreAnimeId = focusAnimeId
         selectionMode = false
         selectedAnimeIds.clear()
-        configureBrowseSelection(focusAnimeId, changedAnimeIds = changedAnimeIds)
+        configureBrowseSelection(
+            focusAnimeId = focusAnimeId,
+            changedAnimeIds = changedAnimeIds,
+            restoreFocus = true,
+        )
         if (!silent) {
             showOverlayMessage("已退出多选模式")
         }
