@@ -1403,7 +1403,7 @@ class MainActivity : AppCompatActivity() {
             null
         }
         val selectionEnabled = enabled && selectionMode
-        val selected = if (selectionEnabled) selectedAnimeIds.toSet() else emptySet()
+        val selected = if (selectionEnabled) selectedAnimeIds else emptySet()
         gridAdapter.onLongClick = longClickHandler
         gridAdapter.updateSelectionState(selectionEnabled, selected)
         sectionAdapter.onLongClick = longClickHandler
@@ -1412,8 +1412,10 @@ class MainActivity : AppCompatActivity() {
             gridAdapter -> gridAdapter.refreshSelection(changedAnimeIds)
             sectionAdapter -> sectionAdapter.updateSelectionState(selectionEnabled, selected, changedAnimeIds)
         }
-        binding.contentRecycler.post {
-            restorePendingAnimeFocusIfPossible()
+        if (changedAnimeIds.isEmpty()) {
+            binding.contentRecycler.post {
+                restorePendingAnimeFocusIfPossible()
+            }
         }
     }
 

@@ -2,11 +2,13 @@ package io.agedm.tv
 
 import android.app.Application
 import android.graphics.Bitmap
+import io.agedm.tv.data.AppStorageDatabase
 import io.agedm.tv.data.AgeRepository
 import io.agedm.tv.data.BangumiAccountService
 import io.agedm.tv.data.BangumiAccountStore
 import io.agedm.tv.data.ContentCache
 import io.agedm.tv.data.LinkCastManager
+import io.agedm.tv.data.PersistentJsonStore
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.ui.createQrBitmap
 import java.io.File
@@ -30,14 +32,26 @@ class AgeTvApplication : Application() {
 
     val bangumiAccountStore: BangumiAccountStore by lazy { BangumiAccountStore(this) }
 
+    private val storageDatabase: AppStorageDatabase by lazy { AppStorageDatabase.get(this) }
+
     val contentCache: ContentCache by lazy {
-        ContentCache(File(cacheDir, "content")).also { it.evictExpired() }
+        ContentCache(
+            database = storageDatabase,
+            legacyDir = File(cacheDir, "content"),
+        ).also { it.evictExpired() }
+    }
+
+    val metadataStore: PersistentJsonStore by lazy {
+        PersistentJsonStore(
+            database = storageDatabase,
+            legacyDir = File(filesDir, "metadata"),
+        )
     }
 
     val ageRepository: AgeRepository by lazy {
         AgeRepository(
             cache = contentCache,
-            persistentDir = File(filesDir, "metadata"),
+            persistentStore = metadataStore,
         )
     }
 

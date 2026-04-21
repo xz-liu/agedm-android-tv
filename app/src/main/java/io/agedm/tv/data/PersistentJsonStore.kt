@@ -2,41 +2,70 @@ package io.agedm.tv.data
 
 import java.io.File
 
-class PersistentJsonStore(private val dir: File) {
+class PersistentJsonStore(
+    private val database: AppStorageDatabase,
+    private val legacyDir: File? = null,
+) {
+
+    @Volatile
+    private var legacyFullyMigrated = false
 
     @Synchronized
     fun read(key: String): String? {
-        val file = fileFor(key)
-        if (!file.exists()) return null
-        return runCatching { file.readText() }.getOrNull()
+        database.readMetadataEntry(key)?.let { return it }
+        return migrateLegacyEntry(key)
     }
 
     @Synchronized
     fun write(key: String, value: String) {
-        runCatching {
-            dir.mkdirs()
-            fileFor(key).writeText(value)
-        }
+        database.writeMetadataEntry(key, value)
+        deleteLegacyFile(key)
     }
 
     @Synchronized
     fun remove(key: String) {
-        runCatching { fileFor(key).delete() }
+        database.removeMetadataEntry(key)
+        deleteLegacyFile(key)
     }
 
     @Synchronized
     fun listKeys(prefix: String = ""): List<String> {
-        val files = dir.listFiles().orEmpty()
-        return files.asSequence()
-            .map { it.name }
-            .filter { it.endsWith(".json") }
-            .map { it.removeSuffix(".json") }
-            .filter { it.startsWith(prefix) }
-            .sorted()
-            .toList()
+        migrateAllLegacyEntries()
+        return database.listMetadataKeys(prefix)
     }
 
-    private fun fileFor(key: String): File {
+    private fun migrateLegacyEntry(key: String): String? {
+        val file = fileFor(key)
+        if (file == null || !file.exists()) return null
+        val value = runCatching { file.readText() }.getOrNull() ?: return null
+        database.writeMetadataEntry(key, value, file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis())
+        file.delete()
+        return value
+    }
+
+    private fun migrateAllLegacyEntries() {
+        if (legacyFullyMigrated) return
+        val files = legacyDir?.listFiles().orEmpty()
+        files.forEach { file ->
+            if (!file.isFile || !file.name.endsWith(".json")) return@forEach
+            val key = file.name.removeSuffix(".json")
+            val value = runCatching { file.readText() }.getOrNull() ?: return@forEach
+            database.writeMetadataEntry(
+                key = key,
+                value = value,
+                updatedAtMs = file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis(),
+            )
+            file.delete()
+        }
+        legacyFullyMigrated = true
+    }
+
+    private fun deleteLegacyFile(key: String) {
+        runCatching { fileFor(key)?.delete() }
+    }
+
+    private fun fileFor(key: String): File? {
+        val dir = legacyDir ?: return null
         val safe = key.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         return File(dir, "$safe.json")
     }

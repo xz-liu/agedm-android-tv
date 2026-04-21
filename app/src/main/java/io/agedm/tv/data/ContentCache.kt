@@ -7,82 +7,74 @@ import java.io.File
  *   WRITE_TS  — when the data was fetched from the network; controls freshness (TTL).
  *   ACCESS_TS — when the entry was last read or explicitly touched; controls eviction.
  *
- * File format (first line, then data):
- *   "<WRITE_TS>\t<ACCESS_TS>\n<data>"
- *
- * Legacy files written with the old single-timestamp format ("<TS>\n<data>") are read
- * as WRITE_TS == ACCESS_TS == TS for backward compatibility.
+ * Entries are stored in SQLite; legacy file-based cache files are migrated lazily.
  */
-class ContentCache(private val dir: File) {
+class ContentCache(
+    private val database: AppStorageDatabase,
+    private val legacyDir: File? = null,
+) {
 
     fun peek(key: String): String? {
-        val file = fileFor(key)
-        if (!file.exists()) return null
-        return try {
-            val text = file.readText()
-            val nl = text.indexOf('\n')
-            if (nl < 0) return null
-            text.substring(nl + 1)
-        } catch (_: Exception) { null }
+        database.peekKvEntry(key)?.let { return it }
+        return migrateLegacyEntry(key)?.data
     }
 
     @Synchronized
     fun get(key: String, ttlMs: Long): String? {
-        val file = fileFor(key)
-        if (!file.exists()) return null
-        return try {
-            val text = file.readText()
-            val nl = text.indexOf('\n')
-            if (nl < 0) { file.delete(); return null }
-            val (writeTs, _) = parseHeader(text.substring(0, nl))
-                ?: run { file.delete(); return null }
-            val now = System.currentTimeMillis()
-            if (now - writeTs > ttlMs) { file.delete(); return null }
-            val data = text.substring(nl + 1)
-            writeFile(file, writeTs, now, data)
-            data
-        } catch (_: Exception) {
-            file.delete()
-            null
+        database.getKvEntry(key, ttlMs)?.let { return it }
+        val legacy = migrateLegacyEntry(key) ?: return null
+        val now = System.currentTimeMillis()
+        if (now - legacy.writeTs > ttlMs) {
+            database.removeKvEntry(key)
+            return null
         }
+        database.putKvEntry(key, legacy.data, legacy.writeTs, now)
+        return legacy.data
     }
 
     @Synchronized
     fun put(key: String, data: String) {
-        try {
-            dir.mkdirs()
-            val now = System.currentTimeMillis()
-            writeFile(fileFor(key), now, now, data)
-        } catch (_: Exception) {}
+        database.putKvEntry(key, data)
+        deleteLegacyFile(key)
     }
 
     @Synchronized
     fun touch(key: String) {
-        val file = fileFor(key)
-        if (!file.exists()) return
-        try {
-            val text = file.readText()
-            val nl = text.indexOf('\n')
-            if (nl < 0) return
-            val (writeTs, _) = parseHeader(text.substring(0, nl)) ?: return
-            writeFile(file, writeTs, System.currentTimeMillis(), text.substring(nl + 1))
-        } catch (_: Exception) {}
+        if (database.peekKvEntry(key) != null) {
+            database.touchKvEntry(key)
+            return
+        }
+        val legacy = migrateLegacyEntry(key) ?: return
+        database.putKvEntry(
+            key = key,
+            value = legacy.data,
+            writeTs = legacy.writeTs,
+            accessTs = System.currentTimeMillis(),
+        )
     }
 
     @Synchronized
     fun clearAll() {
-        try { dir.listFiles()?.forEach { it.delete() } } catch (_: Exception) {}
+        database.clearKvEntries()
+        try {
+            legacyDir?.listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {
+        }
     }
 
     fun sizeBytes(): Long {
-        return try {
-            dir.listFiles()?.sumOf { it.length() } ?: 0L
-        } catch (_: Exception) { 0L }
+        val legacyBytes = try {
+            legacyDir?.listFiles()?.sumOf { it.length() } ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+        return database.kvEntriesSizeBytes() + legacyBytes
     }
 
     fun evictExpired(maxAge: Long = MAX_AGE_MS) {
+        database.evictKvEntriesByAccess(maxAge)
         try {
-            dir.listFiles()?.forEach { file ->
+            legacyDir?.listFiles()?.forEach { file ->
                 try {
                     val header = file.bufferedReader().use { it.readLine() } ?: ""
                     val (_, accessTs) = parseHeader(header) ?: Pair(0L, 0L)
@@ -91,12 +83,36 @@ class ContentCache(private val dir: File) {
                     file.delete()
                 }
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
     }
 
-    private fun writeFile(file: File, writeTs: Long, accessTs: Long, data: String) {
-        dir.mkdirs()
-        file.writeText("$writeTs\t$accessTs\n$data")
+    private fun migrateLegacyEntry(key: String): LegacyEntry? {
+        val file = fileFor(key)
+        if (file == null || !file.exists()) return null
+        val entry = try {
+            val text = file.readText()
+            val nl = text.indexOf('\n')
+            if (nl < 0) {
+                file.delete()
+                return null
+            }
+            val header = parseHeader(text.substring(0, nl)) ?: run {
+                file.delete()
+                return null
+            }
+            LegacyEntry(
+                writeTs = header.first,
+                accessTs = header.second,
+                data = text.substring(nl + 1),
+            )
+        } catch (_: Exception) {
+            file.delete()
+            return null
+        }
+        database.putKvEntry(key, entry.data, entry.writeTs, entry.accessTs)
+        file.delete()
+        return entry
     }
 
     private fun parseHeader(header: String): Pair<Long, Long>? {
@@ -111,10 +127,21 @@ class ContentCache(private val dir: File) {
         }
     }
 
-    private fun fileFor(key: String): File {
+    private fun deleteLegacyFile(key: String) {
+        runCatching { fileFor(key)?.delete() }
+    }
+
+    private fun fileFor(key: String): File? {
+        val dir = legacyDir ?: return null
         val safe = key.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         return File(dir, "$safe.json")
     }
+
+    private data class LegacyEntry(
+        val writeTs: Long,
+        val accessTs: Long,
+        val data: String,
+    )
 
     companion object {
         const val MAX_AGE_MS = 14L * 24 * 60 * 60 * 1000L

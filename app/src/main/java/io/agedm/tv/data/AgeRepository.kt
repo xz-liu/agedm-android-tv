@@ -1,6 +1,5 @@
 package io.agedm.tv.data
 
-import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import java.text.Normalizer
@@ -28,7 +27,7 @@ import org.jsoup.Jsoup
 @OptIn(ExperimentalSerializationApi::class)
 class AgeRepository(
     private val cache: ContentCache? = null,
-    private val persistentDir: File? = null,
+    private val persistentStore: PersistentJsonStore? = null,
     private val client: OkHttpClient = OkHttpClient.Builder().build(),
     private val json: Json = Json {
         ignoreUnknownKeys = true
@@ -38,7 +37,6 @@ class AgeRepository(
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bangumiPrefetchJobs = ConcurrentHashMap<Long, Job>()
     private val bangumiScoreRequests = ConcurrentHashMap<Long, Deferred<String?>>()
-    private val persistentStore by lazy { persistentDir?.let(::PersistentJsonStore) }
     private val supplementalSourceService by lazy {
         SupplementalSourceService(
             cache = cache,

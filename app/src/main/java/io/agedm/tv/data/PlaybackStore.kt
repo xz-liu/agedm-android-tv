@@ -9,11 +9,14 @@ import kotlinx.serialization.json.Json
 @OptIn(ExperimentalSerializationApi::class)
 class PlaybackStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val database = AppStorageDatabase.get(context)
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
         encodeDefaults = true
     }
+    private var recordsCache: MutableMap<Long, PlaybackRecord> = mutableMapOf()
+    private var recordsLoaded = false
 
     @Synchronized
     fun getRecord(animeId: Long): PlaybackRecord? {
@@ -24,7 +27,9 @@ class PlaybackStore(context: Context) {
     fun saveRecord(record: PlaybackRecord) {
         val records = readAll()
         records[record.animeId] = record
-        writeAll(records)
+        recordsCache = records
+        recordsLoaded = true
+        database.upsertPlaybackRecord(record)
     }
 
     @Synchronized
@@ -39,12 +44,16 @@ class PlaybackStore(context: Context) {
     fun deleteRecord(animeId: Long) {
         val records = readAll()
         records.remove(animeId)
-        writeAll(records)
+        recordsCache = records
+        recordsLoaded = true
+        database.deletePlaybackRecord(animeId)
     }
 
     @Synchronized
     fun clearAllRecords() {
-        writeAll(emptyMap())
+        recordsCache = mutableMapOf()
+        recordsLoaded = true
+        database.clearPlaybackRecords()
     }
 
     @Synchronized
@@ -105,20 +114,33 @@ class PlaybackStore(context: Context) {
     }
 
     private fun readAll(): MutableMap<Long, PlaybackRecord> {
+        if (!recordsLoaded) {
+            recordsCache = database.loadPlaybackRecords()
+            if (recordsCache.isEmpty()) {
+                migrateLegacyRecords()
+            }
+            recordsLoaded = true
+        }
+        return recordsCache
+    }
+
+    private fun migrateLegacyRecords() {
         val raw = prefs.getString(KEY_RECORDS, null).orEmpty()
-        if (raw.isBlank()) return mutableMapOf()
-        return try {
+        if (raw.isBlank()) return
+        val migrated = try {
             json.decodeFromString<List<PlaybackRecord>>(raw)
                 .associateBy { it.animeId }
                 .toMutableMap()
         } catch (_: Throwable) {
             mutableMapOf()
         }
-    }
-
-    private fun writeAll(records: Map<Long, PlaybackRecord>) {
-        val payload = records.values.sortedByDescending { it.lastUpdatedEpochMs }
-        prefs.edit().putString(KEY_RECORDS, json.encodeToString(payload)).apply()
+        if (migrated.isEmpty()) {
+            prefs.edit().remove(KEY_RECORDS).apply()
+            return
+        }
+        recordsCache = migrated
+        migrated.values.forEach(database::upsertPlaybackRecord)
+        prefs.edit().remove(KEY_RECORDS).apply()
     }
 
     companion object {
