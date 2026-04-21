@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.selects.select
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -33,8 +32,10 @@ class BangumiAccountService(
     val account: StateFlow<BangumiAccountSession?> = _account.asStateFlow()
 
     private val loginChallenges = ConcurrentHashMap<String, LoginChallenge>()
-    private val userWriteQueue = Channel<QueuedStatusWrite>(Channel.UNLIMITED)
-    private val backgroundWriteQueue = Channel<QueuedStatusWrite>(Channel.UNLIMITED)
+    private val queueSignal = Channel<Unit>(Channel.CONFLATED)
+    private val queueLock = Any()
+    private val userPendingWrites = LinkedHashMap<Long, QueuedStatusWrite>()
+    private val backgroundPendingWrites = LinkedHashMap<Long, QueuedStatusWrite>()
 
     init {
         scope.launch {
@@ -226,7 +227,7 @@ class BangumiAccountService(
 
     fun enqueueManualStatusUpdate(animeId: Long, title: String, status: BangumiCollectionStatus) {
         if (!isLoggedIn()) return
-        userWriteQueue.trySend(
+        enqueueWrite(
             QueuedStatusWrite(
                 animeId = animeId,
                 title = title,
@@ -249,7 +250,7 @@ class BangumiAccountService(
             BangumiCollectionStatus.WISH,
             -> Unit
         }
-        backgroundWriteQueue.trySend(
+        enqueueWrite(
             QueuedStatusWrite(
                 animeId = animeId,
                 title = title,
@@ -272,7 +273,7 @@ class BangumiAccountService(
             BangumiCollectionStatus.DO,
             -> Unit
         }
-        backgroundWriteQueue.trySend(
+        enqueueWrite(
             QueuedStatusWrite(
                 animeId = animeId,
                 title = title,
@@ -286,7 +287,7 @@ class BangumiAccountService(
     fun enqueueBatchStatusUpdate(cards: Collection<AnimeCard>, status: BangumiCollectionStatus) {
         if (!isLoggedIn()) return
         cards.forEach { card ->
-            userWriteQueue.trySend(
+            enqueueWrite(
                 QueuedStatusWrite(
                     animeId = card.animeId,
                     title = card.title,
@@ -311,7 +312,7 @@ class BangumiAccountService(
                 BangumiCollectionStatus.WISH,
                 -> Unit
             }
-            backgroundWriteQueue.trySend(
+            enqueueWrite(
                 QueuedStatusWrite(
                     animeId = record.animeId,
                     title = record.animeTitle,
@@ -446,6 +447,29 @@ class BangumiAccountService(
         updateCollectionStatus(task.animeId, task.title, task.status)
     }
 
+    private fun enqueueWrite(task: QueuedStatusWrite) {
+        val changed = synchronized(queueLock) {
+            when (task.source) {
+                WriteSource.USER_ACTION -> {
+                    backgroundPendingWrites.remove(task.animeId)
+                    userPendingWrites[task.animeId] = mergePendingWrite(userPendingWrites[task.animeId], task)
+                    true
+                }
+                WriteSource.PLAYBACK_SYNC -> {
+                    if (userPendingWrites.containsKey(task.animeId)) {
+                        false
+                    } else {
+                        backgroundPendingWrites[task.animeId] = mergePendingWrite(backgroundPendingWrites[task.animeId], task)
+                        true
+                    }
+                }
+            }
+        }
+        if (changed) {
+            queueSignal.trySend(Unit)
+        }
+    }
+
     private suspend fun resolveCurrentStatus(task: QueuedStatusWrite): BangumiCollectionStatus? {
         return when (task.source) {
             WriteSource.USER_ACTION -> {
@@ -460,12 +484,42 @@ class BangumiAccountService(
     }
 
     private suspend fun nextQueuedWrite(): QueuedStatusWrite {
-        userWriteQueue.tryReceive().getOrNull()?.let { return it }
-        backgroundWriteQueue.tryReceive().getOrNull()?.let { return it }
-        return select {
-            userWriteQueue.onReceive { it }
-            backgroundWriteQueue.onReceive { it }
+        while (true) {
+            synchronized(queueLock) {
+                takeFirstPending(userPendingWrites)?.let { return it }
+                takeFirstPending(backgroundPendingWrites)?.let { return it }
+            }
+            queueSignal.receive()
         }
+    }
+
+    private fun takeFirstPending(queue: LinkedHashMap<Long, QueuedStatusWrite>): QueuedStatusWrite? {
+        val iterator = queue.entries.iterator()
+        if (!iterator.hasNext()) return null
+        val entry = iterator.next()
+        iterator.remove()
+        return entry.value
+    }
+
+    private fun mergePendingWrite(
+        existing: QueuedStatusWrite?,
+        incoming: QueuedStatusWrite,
+    ): QueuedStatusWrite {
+        if (existing == null) return incoming
+        if (existing.source != incoming.source) {
+            return if (incoming.source == WriteSource.USER_ACTION) incoming else existing
+        }
+        if (incoming.source == WriteSource.USER_ACTION) {
+            return incoming
+        }
+        if (existing.status == BangumiCollectionStatus.COLLECT || incoming.status == BangumiCollectionStatus.COLLECT) {
+            return incoming.copy(
+                title = incoming.title.ifBlank { existing.title },
+                status = BangumiCollectionStatus.COLLECT,
+                mode = WriteMode.UPSERT,
+            )
+        }
+        return incoming.copy(title = incoming.title.ifBlank { existing.title })
     }
 
     private fun shouldWrite(
@@ -555,11 +609,20 @@ class BangumiAccountService(
 
     private suspend fun resolveSubjectId(animeId: Long, title: String): Long? {
         store.getCollectionStatus(animeId)?.subjectId?.takeIf { it > 0 }?.let { return it }
-        val metadata = repository.ensureBangumiMetadata(animeId, title) ?: return null
-        if (metadata.subjectId > 0) {
-            store.saveSubjectMatch(metadata.subjectId, animeId)
+        val subjectId = repository.ensureBangumiSubjectId(animeId, title) ?: return null
+        if (subjectId > 0) {
+            store.saveSubjectMatch(subjectId, animeId)
+            val current = store.getCollectionStatus(animeId)
+            store.saveCollectionStatus(
+                animeId,
+                BangumiCollectionCacheEntry(
+                    subjectId = subjectId,
+                    status = current?.status.orEmpty(),
+                    updatedAtMs = current?.updatedAtMs ?: 0L,
+                ),
+            )
         }
-        return metadata.subjectId.takeIf { it > 0 }
+        return subjectId.takeIf { it > 0 }
     }
 
     private suspend fun refreshStoredAccount(session: BangumiAccountSession): BangumiAccountSession {

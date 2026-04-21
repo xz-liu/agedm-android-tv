@@ -185,6 +185,15 @@ class AgeRepository(
         bangumiService?.fetch(animeId, title, forceRefresh)
     }
 
+    suspend fun ensureBangumiSubjectId(
+        animeId: Long,
+        title: String,
+        forceRefreshMatch: Boolean = false,
+    ): Long? = withContext(Dispatchers.IO) {
+        rememberBangumiLookupTitle(animeId, title)
+        bangumiService?.resolveSubjectId(animeId, title, forceRefreshMatch)
+    }
+
     fun prefetchBangumiMetadata(
         animeId: Long,
         title: String,

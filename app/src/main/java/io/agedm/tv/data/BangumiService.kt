@@ -125,6 +125,25 @@ internal class BangumiService(
         }.getOrElse { cached }
     }
 
+    suspend fun resolveSubjectId(
+        animeId: Long,
+        title: String,
+        forceRefreshMatch: Boolean = false,
+    ): Long? {
+        if (animeId <= 0L) return null
+        peek(animeId)?.subjectId?.takeIf { it > 0 }?.let { return it }
+        if (title.isBlank() && !forceRefreshMatch) {
+            return readResolvedMatchCache(animeId)?.toResolvedMatch()?.subjectId?.takeIf { it > 0 }
+        }
+        val resolved = if (forceRefreshMatch) {
+            searchSubject(animeId, title, includeRemoteSearch = true)
+                .also { cacheResolvedMatch(animeId, it) }
+        } else {
+            resolveSubject(animeId, title)
+        }
+        return resolved?.subjectId?.takeIf { it > 0 }
+    }
+
     suspend fun listSuspiciousMatches(limit: Int = DEFAULT_REVIEW_LIMIT): List<BangumiMatchIssue> {
         return store.listKeys(matchCacheKeyPrefix())
             .mapNotNull { key ->
