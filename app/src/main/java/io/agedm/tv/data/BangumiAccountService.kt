@@ -176,10 +176,18 @@ class BangumiAccountService(
         homepage?.cookies?.let(cookies::putAll)
         val account = directAccount ?: homepage?.let { parseAccount(it.body, cookies) }
         return if (account != null) {
+            val verified = verifyAuthenticatedAccount(cookies)
+            if (verified == null) {
+                BangumiLoginResult(
+                    success = false,
+                    message = "登录未完成，Bangumi 会话未通过校验，请重新输入验证码",
+                )
+            } else {
             loginChallenges.remove(sessionId)
-            store.saveSession(account)
-            _account.value = account
-            BangumiLoginResult(true, "Bangumi 登录成功", account)
+                store.saveSession(verified)
+                _account.value = verified
+                BangumiLoginResult(true, "Bangumi 登录成功", verified)
+            }
         } else {
             val failureMessage = extractLoginFailureMessage(loginResponse.body)
                 ?: homepage?.body?.let(::extractLoginFailureMessage)
@@ -633,13 +641,31 @@ class BangumiAccountService(
         val mergedCookies = session.cookies.toMutableMap().apply { putAll(response.cookies) }
         val refreshed = parseAccount(response.body, mergedCookies)?.copy(
             lastValidatedMs = System.currentTimeMillis(),
-        ) ?: session.copy(
-            cookies = mergedCookies,
-            lastValidatedMs = System.currentTimeMillis(),
-        )
+        ) ?: run {
+            clearInvalidSession()
+            throw BangumiSessionExpiredException()
+        }
         store.saveSession(refreshed)
         _account.value = refreshed
         return refreshed
+    }
+
+    private fun verifyAuthenticatedAccount(cookies: Map<String, String>): BangumiAccountSession? {
+        return runCatching {
+            val response = executeTextRequest(
+                url = SETTINGS_URL,
+                cookies = cookies,
+                referer = LOGIN_URL,
+            )
+            if (looksLikeExpiredSession(response)) {
+                null
+            } else {
+                val mergedCookies = cookies.toMutableMap().apply { putAll(response.cookies) }
+                parseAccount(response.body, mergedCookies)?.copy(
+                    lastValidatedMs = System.currentTimeMillis(),
+                )
+            }
+        }.getOrNull()
     }
 
     private fun parseAccount(body: String, cookies: Map<String, String>): BangumiAccountSession? {
@@ -867,10 +893,15 @@ class BangumiAccountService(
             return true
         }
         val document = Jsoup.parse(body)
+        val hasAuthenticatedMarkers =
+            extractAuthenticatedUsername(body) != null || document.selectFirst("input[name=nickname]") != null
+        val dockLogin = document.selectFirst(
+            "#dock a[href*=login], #dock a[href$=/login], #dock a[href='https://bgm.tv/login']",
+        ) != null
         val guestHeader = document.selectFirst(".idBadgerNeue .guest a[href*=login]") != null
         val loginRequiredNotice = document.selectFirst("#colunmNotice .message .text a[href=/login]") != null ||
             body.contains("当前操作需要您") && body.contains("/login")
-        return guestHeader && loginRequiredNotice
+        return (guestHeader && loginRequiredNotice) || (dockLogin && !hasAuthenticatedMarkers)
     }
 
     private fun parseSetCookies(headers: Headers): Map<String, String> {
