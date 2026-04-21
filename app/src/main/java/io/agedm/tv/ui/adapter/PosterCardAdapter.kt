@@ -71,14 +71,17 @@ class PosterCardAdapter(
     fun updateSelectionState(
         selectionMode: Boolean,
         selectedIds: Set<Long>,
+        changedAnimeIds: Collection<Long> = emptyList(),
     ) {
-        val changedIds = linkedSetOf<Long>().apply {
-            addAll(this@PosterCardAdapter.selectedIds)
-            addAll(selectedIds)
-        }
         this.selectionMode = selectionMode
         this.selectedIds = selectedIds
-        notifyAnimeIdsChanged(changedIds, PAYLOAD_SELECTION)
+        if (changedAnimeIds.isNotEmpty()) {
+            notifyAnimeIdsChanged(changedAnimeIds, PAYLOAD_SELECTION)
+        }
+    }
+
+    fun refreshSelection(animeIds: Collection<Long>) {
+        notifyAnimeIdsChanged(animeIds, PAYLOAD_SELECTION)
     }
 
     fun refreshCollectionStatuses(animeIds: Collection<Long>) {

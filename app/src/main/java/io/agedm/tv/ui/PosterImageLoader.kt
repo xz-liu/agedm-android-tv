@@ -21,6 +21,5 @@ fun ImageView.loadPosterImage(url: String) {
         crossfade(false)
         placeholder(placeholder)
         error(placeholder)
-        allowHardware(false)
     }
 }

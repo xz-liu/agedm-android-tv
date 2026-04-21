@@ -264,6 +264,9 @@ class MainActivity : AppCompatActivity() {
             if (event.keyCode != KeyEvent.KEYCODE_DPAD_UP || focused == null || !isInNavArea(focused)) {
                 lastNavUpPressUptimeMs = 0L
             }
+            if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && focused != null && routeUpToCurrentNavIfNeeded(focused)) {
+                return true
+            }
             if (focused != null && event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && handleInfiniteGridDownPress(focused)) {
                 return true
             }
@@ -1007,6 +1010,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun routeUpToCurrentNavIfNeeded(focused: View): Boolean {
+        if (isInNavArea(focused)) return false
+        if (!isDescendantOf(focused, binding.contentStage) && !isDescendantOf(focused, binding.filterScroll)) {
+            return false
+        }
+        val next = focused.focusSearch(View.FOCUS_UP)
+        if (next != null && !isInNavArea(next)) return false
+        val target = currentNavButton()
+        if (!target.isShown || !target.isFocusable) return false
+        clearNavFocusSwitchArm()
+        lastNavUpPressUptimeMs = 0L
+        return target.requestFocus()
+    }
+
     private fun restorePendingFocusIfPossible(): Boolean {
         val targetId = pendingFocusRestoreViewId ?: return false
         val target = findViewById<View>(targetId)
@@ -1374,7 +1391,10 @@ class MainActivity : AppCompatActivity() {
         binding.navHistoryButton.text = getString(R.string.btn_history)
     }
 
-    private fun configureBrowseSelection(focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId()) {
+    private fun configureBrowseSelection(
+        focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId(),
+        changedAnimeIds: Collection<Long> = emptyList(),
+    ) {
         pendingFocusRestoreAnimeId = focusAnimeId
         val enabled = canUseBatchSelection()
         val longClickHandler = if (enabled) {
@@ -1382,11 +1402,16 @@ class MainActivity : AppCompatActivity() {
         } else {
             null
         }
-        val selected = if (enabled && selectionMode) selectedAnimeIds.toSet() else emptySet()
+        val selectionEnabled = enabled && selectionMode
+        val selected = if (selectionEnabled) selectedAnimeIds.toSet() else emptySet()
         gridAdapter.onLongClick = longClickHandler
-        gridAdapter.updateSelectionState(enabled && selectionMode, selected)
+        gridAdapter.updateSelectionState(selectionEnabled, selected)
         sectionAdapter.onLongClick = longClickHandler
-        sectionAdapter.updateSelectionState(enabled && selectionMode, selected)
+        sectionAdapter.updateSelectionState(selectionEnabled, selected)
+        when (binding.contentRecycler.adapter) {
+            gridAdapter -> gridAdapter.refreshSelection(changedAnimeIds)
+            sectionAdapter -> sectionAdapter.updateSelectionState(selectionEnabled, selected, changedAnimeIds)
+        }
         binding.contentRecycler.post {
             restorePendingAnimeFocusIfPossible()
         }
@@ -1404,12 +1429,12 @@ class MainActivity : AppCompatActivity() {
             selectionMode = true
             selectedAnimeIds.clear()
             selectedAnimeIds += card.animeId
-            configureBrowseSelection(card.animeId)
+            configureBrowseSelection(card.animeId, changedAnimeIds = listOf(card.animeId))
             showOverlayMessage("多选模式：按 OK 勾选，长按执行批量标记，返回退出")
             return
         }
         selectedAnimeIds += card.animeId
-        configureBrowseSelection(card.animeId)
+        configureBrowseSelection(card.animeId, changedAnimeIds = listOf(card.animeId))
         showBatchStatusDialog()
     }
 
@@ -1422,18 +1447,22 @@ class MainActivity : AppCompatActivity() {
             selectedAnimeIds.remove(card.animeId)
         }
         if (selectedAnimeIds.isEmpty()) {
-            exitSelectionMode(silent = true, focusAnimeId = card.animeId)
+            exitSelectionMode(silent = true, focusAnimeId = card.animeId, changedAnimeIds = listOf(card.animeId))
         } else {
-            configureBrowseSelection(card.animeId)
+            configureBrowseSelection(card.animeId, changedAnimeIds = listOf(card.animeId))
         }
     }
 
-    private fun exitSelectionMode(silent: Boolean = false, focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId()) {
+    private fun exitSelectionMode(
+        silent: Boolean = false,
+        focusAnimeId: Long? = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId(),
+        changedAnimeIds: Collection<Long> = selectedAnimeIds.toList(),
+    ) {
         if (!selectionMode && selectedAnimeIds.isEmpty()) return
         pendingFocusRestoreAnimeId = focusAnimeId
         selectionMode = false
         selectedAnimeIds.clear()
-        configureBrowseSelection(focusAnimeId)
+        configureBrowseSelection(focusAnimeId, changedAnimeIds = changedAnimeIds)
         if (!silent) {
             showOverlayMessage("已退出多选模式")
         }

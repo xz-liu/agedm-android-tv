@@ -25,6 +25,7 @@ class BrowseSectionAdapter(
 
     private var items: List<BrowseSection> = emptyList()
     private val sectionIndexesByAnimeId = mutableMapOf<Long, MutableSet<Int>>()
+    private var lastSelectionChangedAnimeIds: Set<Long> = emptySet()
 
     init {
         setHasStableIds(true)
@@ -39,14 +40,14 @@ class BrowseSectionAdapter(
     fun updateSelectionState(
         selectionMode: Boolean,
         selectedIds: Set<Long>,
+        changedAnimeIds: Collection<Long> = emptyList(),
     ) {
-        val changedIds = linkedSetOf<Long>().apply {
-            addAll(this@BrowseSectionAdapter.selectedIds)
-            addAll(selectedIds)
-        }
         this.selectionMode = selectionMode
         this.selectedIds = selectedIds
-        notifySectionsChanged(changedIds)
+        lastSelectionChangedAnimeIds = changedAnimeIds.toSet()
+        if (changedAnimeIds.isNotEmpty()) {
+            notifySectionsChanged(changedAnimeIds)
+        }
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SectionViewHolder {
@@ -71,7 +72,7 @@ class BrowseSectionAdapter(
         }
         val payloadSet = payloads.filterIsInstance<String>().toSet()
         if (PAYLOAD_SELECTION in payloadSet) {
-            holder.updateSelectionState(selectionMode, selectedIds)
+            holder.updateSelectionState(selectionMode, selectedIds, lastSelectionChangedAnimeIds)
             return
         }
         onBindViewHolder(holder, position)
@@ -115,8 +116,12 @@ class BrowseSectionAdapter(
             posterAdapter.submitList(item.items)
         }
 
-        fun updateSelectionState(selectionMode: Boolean, selectedIds: Set<Long>) {
-            posterAdapter.updateSelectionState(selectionMode, selectedIds)
+        fun updateSelectionState(
+            selectionMode: Boolean,
+            selectedIds: Set<Long>,
+            changedAnimeIds: Collection<Long> = emptyList(),
+        ) {
+            posterAdapter.updateSelectionState(selectionMode, selectedIds, changedAnimeIds)
         }
     }
 
