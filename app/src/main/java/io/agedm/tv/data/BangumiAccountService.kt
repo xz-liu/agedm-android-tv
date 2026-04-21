@@ -1,5 +1,6 @@
 package io.agedm.tv.data
 
+import android.util.Log
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.selects.select
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -31,13 +33,29 @@ class BangumiAccountService(
     val account: StateFlow<BangumiAccountSession?> = _account.asStateFlow()
 
     private val loginChallenges = ConcurrentHashMap<String, LoginChallenge>()
-    private val writeQueue = Channel<QueuedStatusWrite>(Channel.UNLIMITED)
+    private val userWriteQueue = Channel<QueuedStatusWrite>(Channel.UNLIMITED)
+    private val backgroundWriteQueue = Channel<QueuedStatusWrite>(Channel.UNLIMITED)
 
     init {
         scope.launch {
-            for (task in writeQueue) {
+            while (true) {
+                val task = nextQueuedWrite()
                 runCatching { processQueuedWrite(task) }
-                delay(Random.nextLong(700L, 1_300L))
+                    .onFailure { error ->
+                        Log.w(
+                            TAG,
+                            "Bangumi write failed: animeId=${task.animeId}, title=${task.title}, " +
+                                "status=${task.status}, source=${task.source}",
+                            error,
+                        )
+                    }
+                delay(
+                    if (task.source == WriteSource.USER_ACTION) {
+                        Random.nextLong(200L, 450L)
+                    } else {
+                        Random.nextLong(700L, 1_300L)
+                    },
+                )
             }
         }
         if (isLoggedIn()) {
@@ -160,7 +178,6 @@ class BangumiAccountService(
             loginChallenges.remove(sessionId)
             store.saveSession(account)
             _account.value = account
-            syncExistingPlaybackRecords()
             BangumiLoginResult(true, "Bangumi 登录成功", account)
         } else {
             val failureMessage = extractLoginFailureMessage(loginResponse.body)
@@ -185,8 +202,6 @@ class BangumiAccountService(
         val session = _account.value ?: return
         runCatching {
             refreshStoredAccount(session)
-        }.onSuccess {
-            syncExistingPlaybackRecords()
         }
     }
 
@@ -211,36 +226,59 @@ class BangumiAccountService(
 
     fun enqueueManualStatusUpdate(animeId: Long, title: String, status: BangumiCollectionStatus) {
         if (!isLoggedIn()) return
-        writeQueue.trySend(
+        userWriteQueue.trySend(
             QueuedStatusWrite(
                 animeId = animeId,
                 title = title,
                 status = status,
                 mode = WriteMode.UPSERT,
+                source = WriteSource.USER_ACTION,
             ),
         )
     }
 
     fun enqueuePlaybackStarted(animeId: Long, title: String) {
         if (!isLoggedIn()) return
-        writeQueue.trySend(
+        when (cachedCollectionStatus(animeId)) {
+            BangumiCollectionStatus.DO,
+            BangumiCollectionStatus.COLLECT,
+            BangumiCollectionStatus.ON_HOLD,
+            BangumiCollectionStatus.DROPPED,
+            -> return
+            null,
+            BangumiCollectionStatus.WISH,
+            -> Unit
+        }
+        backgroundWriteQueue.trySend(
             QueuedStatusWrite(
                 animeId = animeId,
                 title = title,
                 status = BangumiCollectionStatus.DO,
                 mode = WriteMode.PLAYBACK_STARTED,
+                source = WriteSource.PLAYBACK_SYNC,
             ),
         )
     }
 
     fun enqueuePlaybackCompleted(animeId: Long, title: String) {
         if (!isLoggedIn()) return
-        writeQueue.trySend(
+        when (cachedCollectionStatus(animeId)) {
+            BangumiCollectionStatus.COLLECT,
+            BangumiCollectionStatus.ON_HOLD,
+            BangumiCollectionStatus.DROPPED,
+            -> return
+            null,
+            BangumiCollectionStatus.WISH,
+            BangumiCollectionStatus.DO,
+            -> Unit
+        }
+        backgroundWriteQueue.trySend(
             QueuedStatusWrite(
                 animeId = animeId,
                 title = title,
                 status = BangumiCollectionStatus.COLLECT,
                 mode = WriteMode.UPSERT,
+                source = WriteSource.PLAYBACK_SYNC,
             ),
         )
     }
@@ -248,12 +286,13 @@ class BangumiAccountService(
     fun enqueueBatchStatusUpdate(cards: Collection<AnimeCard>, status: BangumiCollectionStatus) {
         if (!isLoggedIn()) return
         cards.forEach { card ->
-            writeQueue.trySend(
+            userWriteQueue.trySend(
                 QueuedStatusWrite(
                     animeId = card.animeId,
                     title = card.title,
                     status = status,
                     mode = WriteMode.UPSERT,
+                    source = WriteSource.USER_ACTION,
                 ),
             )
         }
@@ -261,13 +300,24 @@ class BangumiAccountService(
 
     fun syncExistingPlaybackRecords() {
         if (!isLoggedIn()) return
-        playbackStore.getRecentRecords(60).forEach { record ->
-            writeQueue.trySend(
+        playbackStore.getRecentRecords(MAX_BACKGROUND_SYNC_RECORDS).forEach { record ->
+            when (cachedCollectionStatus(record.animeId)) {
+                BangumiCollectionStatus.DO,
+                BangumiCollectionStatus.COLLECT,
+                BangumiCollectionStatus.ON_HOLD,
+                BangumiCollectionStatus.DROPPED,
+                -> return@forEach
+                null,
+                BangumiCollectionStatus.WISH,
+                -> Unit
+            }
+            backgroundWriteQueue.trySend(
                 QueuedStatusWrite(
                     animeId = record.animeId,
                     title = record.animeTitle,
-                    status = if (record.completed) BangumiCollectionStatus.COLLECT else BangumiCollectionStatus.DO,
-                    mode = if (record.completed) WriteMode.UPSERT else WriteMode.PLAYBACK_STARTED,
+                    status = BangumiCollectionStatus.DO,
+                    mode = WriteMode.PLAYBACK_STARTED,
+                    source = WriteSource.PLAYBACK_SYNC,
                 ),
             )
         }
@@ -391,9 +441,31 @@ class BangumiAccountService(
 
     private suspend fun processQueuedWrite(task: QueuedStatusWrite) {
         if (!isLoggedIn()) return
-        val current = runCatching { fetchCollectionStatus(task.animeId, task.title) }.getOrNull()
+        val current = resolveCurrentStatus(task)
         if (!shouldWrite(current, task)) return
         updateCollectionStatus(task.animeId, task.title, task.status)
+    }
+
+    private suspend fun resolveCurrentStatus(task: QueuedStatusWrite): BangumiCollectionStatus? {
+        return when (task.source) {
+            WriteSource.USER_ACTION -> {
+                cachedCollectionStatus(task.animeId)
+                    ?: runCatching { fetchCollectionStatus(task.animeId, task.title) }.getOrNull()
+            }
+            WriteSource.PLAYBACK_SYNC -> {
+                runCatching { fetchCollectionStatus(task.animeId, task.title) }.getOrNull()
+                    ?: cachedCollectionStatus(task.animeId)
+            }
+        }
+    }
+
+    private suspend fun nextQueuedWrite(): QueuedStatusWrite {
+        userWriteQueue.tryReceive().getOrNull()?.let { return it }
+        backgroundWriteQueue.tryReceive().getOrNull()?.let { return it }
+        return select {
+            userWriteQueue.onReceive { it }
+            backgroundWriteQueue.onReceive { it }
+        }
     }
 
     private fun shouldWrite(
@@ -401,8 +473,16 @@ class BangumiAccountService(
         task: QueuedStatusWrite,
     ): Boolean {
         if (current == task.status) return false
-        if (task.mode == WriteMode.PLAYBACK_STARTED && current == BangumiCollectionStatus.COLLECT) {
-            return false
+        if (task.source == WriteSource.PLAYBACK_SYNC) {
+            if (current == BangumiCollectionStatus.COLLECT ||
+                current == BangumiCollectionStatus.ON_HOLD ||
+                current == BangumiCollectionStatus.DROPPED
+            ) {
+                return false
+            }
+            if (task.mode == WriteMode.PLAYBACK_STARTED) {
+                return current == null || current == BangumiCollectionStatus.WISH
+            }
         }
         return true
     }
@@ -787,11 +867,17 @@ class BangumiAccountService(
         PLAYBACK_STARTED,
     }
 
+    private enum class WriteSource {
+        USER_ACTION,
+        PLAYBACK_SYNC,
+    }
+
     private data class QueuedStatusWrite(
         val animeId: Long,
         val title: String,
         val status: BangumiCollectionStatus,
         val mode: WriteMode,
+        val source: WriteSource,
     )
 
     private class BangumiSessionExpiredException : IOException("Bangumi 登录状态已失效，请重新扫码")
@@ -804,6 +890,8 @@ class BangumiAccountService(
         private const val FOLLOW_THE_RABBIT_URL = "${BASE_URL}FollowTheRabbit"
         private const val LOGIN_CHALLENGE_TTL_MS = 10 * 60_000L
         private const val MAX_REDIRECTS = 6
+        private const val MAX_BACKGROUND_SYNC_RECORDS = 20
+        private const val TAG = "BangumiAccountService"
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
     }
