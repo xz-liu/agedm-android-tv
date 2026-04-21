@@ -16,6 +16,7 @@ import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.databinding.ItemPosterCardBinding
 import io.agedm.tv.ui.MainActivity
 import io.agedm.tv.ui.loadPosterImage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class PosterCardAdapter(
@@ -26,6 +27,7 @@ class PosterCardAdapter(
         const val PAYLOAD_SELECTION = "payload_selection"
         const val PAYLOAD_SCORE = "payload_score"
         const val PAYLOAD_COLLECTION = "payload_collection"
+        const val SCORE_PREFETCH_WORKER_COUNT = 2
     }
 
     var onLongClick: ((AnimeCard) -> Unit)? = null
@@ -39,6 +41,10 @@ class PosterCardAdapter(
     private val scoreCache = mutableMapOf<Long, String>()
     private val inFlightScoreIds = mutableSetOf<Long>()
     private val indexByAnimeId = mutableMapOf<Long, Int>()
+    private val scorePrefetchLock = Any()
+    private var scorePrefetchGeneration: Long = 0L
+    private var scorePrefetchJobs: List<Job> = emptyList()
+    private var attachedRecyclerView: RecyclerView? = null
 
     init {
         setHasStableIds(true)
@@ -46,6 +52,7 @@ class PosterCardAdapter(
 
     fun submitList(cards: List<AnimeCard>) {
         val deduplicated = cards.distinctBy { it.animeId }
+        scoreCache.keys.retainAll(deduplicated.map { it.animeId }.toSet())
         items = deduplicated
         deduplicated.forEach { card ->
             if (card.bgmScore.isNotBlank()) {
@@ -54,6 +61,7 @@ class PosterCardAdapter(
         }
         rebuildIndex()
         notifyDataSetChanged()
+        restartScorePrefetch()
     }
 
     fun appendList(cards: List<AnimeCard>) {
@@ -69,6 +77,7 @@ class PosterCardAdapter(
         }
         rebuildIndex(start)
         notifyItemRangeInserted(start, appended.size)
+        restartScorePrefetch()
     }
 
     fun updateSelectionState(
@@ -128,6 +137,20 @@ class PosterCardAdapter(
     override fun getItemCount(): Int = items.size
 
     override fun getItemId(position: Int): Long = items[position].animeId
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        attachedRecyclerView = recyclerView
+        restartScorePrefetch()
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        cancelScorePrefetch()
+        if (attachedRecyclerView === recyclerView) {
+            attachedRecyclerView = null
+        }
+        super.onDetachedFromRecyclerView(recyclerView)
+    }
 
     inner class PosterViewHolder(
         private val binding: ItemPosterCardBinding,
@@ -191,20 +214,6 @@ class PosterCardAdapter(
 
             binding.scoreText.visibility = View.GONE
             binding.scoreGradient.visibility = View.GONE
-            val lifecycleOwner = binding.root.context.findLifecycleOwner() ?: return
-
-            val app = binding.root.context.applicationContext as? AgeTvApplication ?: return
-            if (!inFlightScoreIds.add(item.animeId)) return
-            lifecycleOwner.lifecycleScope.launch {
-                try {
-                    val score = app.ageRepository.ensureBangumiScore(item.animeId, item.title).orEmpty()
-                    if (score.isBlank()) return@launch
-                    scoreCache[item.animeId] = score
-                    notifyAnimeIdsChanged(listOf(item.animeId), PAYLOAD_SCORE)
-                } finally {
-                    inFlightScoreIds.remove(item.animeId)
-                }
-            }
         }
 
         fun bindCollectionStatus(item: AnimeCard) {
@@ -229,6 +238,58 @@ class PosterCardAdapter(
             })
             binding.collectionBadge.visibility = View.VISIBLE
         }
+    }
+
+    private fun restartScorePrefetch() {
+        val recyclerView = attachedRecyclerView ?: return
+        val lifecycleOwner = recyclerView.context.findLifecycleOwner() ?: return
+        val app = recyclerView.context.applicationContext as? AgeTvApplication ?: return
+        cancelScorePrefetch()
+
+        val pendingItems = items.filter { card ->
+            card.bgmScore.isBlank() && scoreCache[card.animeId].orEmpty().isBlank()
+        }
+        if (pendingItems.isEmpty()) return
+
+        val queue = ArrayDeque(pendingItems)
+        val generation = synchronized(scorePrefetchLock) {
+            ++scorePrefetchGeneration
+        }
+
+        scorePrefetchJobs = List(SCORE_PREFETCH_WORKER_COUNT) {
+            lifecycleOwner.lifecycleScope.launch {
+                while (true) {
+                    val next = synchronized(scorePrefetchLock) {
+                        if (generation != scorePrefetchGeneration) return@launch
+                        queue.removeFirstOrNull()
+                    } ?: break
+                    if (!inFlightScoreIds.add(next.animeId)) {
+                        continue
+                    }
+                    try {
+                        val score = app.ageRepository.ensureBangumiScore(
+                            animeId = next.animeId,
+                            title = next.title,
+                        ).orEmpty()
+                        if (generation != scorePrefetchGeneration || score.isBlank()) {
+                            continue
+                        }
+                        scoreCache[next.animeId] = score
+                        notifyAnimeIdsChanged(listOf(next.animeId), PAYLOAD_SCORE)
+                    } finally {
+                        inFlightScoreIds.remove(next.animeId)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun cancelScorePrefetch() {
+        synchronized(scorePrefetchLock) {
+            scorePrefetchGeneration += 1
+        }
+        scorePrefetchJobs.forEach(Job::cancel)
+        scorePrefetchJobs = emptyList()
     }
 
     private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? {

@@ -13,6 +13,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -37,6 +39,7 @@ class AgeRepository(
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bangumiPrefetchJobs = ConcurrentHashMap<Long, Job>()
     private val bangumiScoreRequests = ConcurrentHashMap<Long, Deferred<String?>>()
+    private val bangumiScoreRequestGate = Semaphore(BANGUMI_SCORE_PARALLELISM)
     private val supplementalSourceService by lazy {
         SupplementalSourceService(
             cache = cache,
@@ -229,7 +232,9 @@ class AgeRepository(
         }
         val deferred = repositoryScope.async {
             try {
-                service.fetchScore(animeId, title)
+                bangumiScoreRequestGate.withPermit {
+                    service.fetchScore(animeId, title)
+                }
             } finally {
                 bangumiScoreRequests.remove(animeId)
             }
@@ -702,8 +707,10 @@ class AgeRepository(
     private fun updateCacheKey(page: Int): String = "update_p$page"
 
     private fun catalogCacheKey(query: CatalogQuery): String {
-        return "catalog_p${query.page}_r${query.region}_g${query.genre}" +
-            "_l${query.label}_y${query.year}_o${query.order}"
+        return "catalog_p${query.page}_s${query.size}" +
+            "_r${query.region}_g${query.genre}_l${query.label}" +
+            "_y${query.year}_sn${query.season}_st${query.status}" +
+            "_re${query.resource}_lt${query.letter}_o${query.order}"
     }
 
     private fun searchCacheKey(query: String, page: Int): String {
@@ -1150,6 +1157,7 @@ class AgeRepository(
         private const val MOBILE_REFERER = "https://m.agedm.io/"
         private const val DESKTOP_REFERER = "https://www.agedm.io/"
         private const val MAX_ALIGNMENT_SEARCH_QUERIES = 10
+        private const val BANGUMI_SCORE_PARALLELISM = 2
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 12; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 
