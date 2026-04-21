@@ -22,6 +22,14 @@
             android:scaleType="centerCrop" />
 
         <View
+            android:id="@+id/badgeGradient"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_gravity="top"
+            android:background="@drawable/bg_poster_badge_gradient"
+            android:visibility="gone" />
+
+        <View
             android:id="@+id/scoreGradient"
             android:layout_width="match_parent"
             android:layout_height="56dp"
@@ -46,24 +54,28 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|start"
-            android:layout_margin="6dp"
-            android:background="@drawable/bg_badge"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="7dp"
             android:ellipsize="end"
             android:maxLines="1"
-            android:paddingStart="7dp"
-            android:paddingTop="3dp"
-            android:paddingEnd="7dp"
-            android:paddingBottom="3dp"
             android:textColor="@color/age_text"
             android:textSize="11sp"
             android:textStyle="bold"
             android:visibility="gone" />
 
-        <io.agedm.tv.ui.CornerTriangleView
-            android:id="@+id/collectionTriangle"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
+        <TextView
+            android:id="@+id/collectionBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="top|end"
+            android:layout_margin="6dp"
+            android:paddingStart="7dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="7dp"
+            android:paddingBottom="3dp"
+            android:textColor="@color/age_text"
+            android:textSize="10sp"
+            android:textStyle="bold"
             android:visibility="gone" />
 
         <View

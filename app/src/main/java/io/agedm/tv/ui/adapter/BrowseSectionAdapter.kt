@@ -12,12 +12,19 @@ class BrowseSectionAdapter(
     private val onSelected: (AnimeCard) -> Unit,
 ) : RecyclerView.Adapter<BrowseSectionAdapter.SectionViewHolder>() {
 
+    private companion object {
+        const val PAYLOAD_SELECTION = "payload_selection"
+    }
+
     var onLongClick: ((AnimeCard) -> Unit)? = null
     var onSelectionToggle: ((AnimeCard) -> Unit)? = null
     var selectionMode: Boolean = false
+        private set
     var selectedIds: Set<Long> = emptySet()
+        private set
 
     private var items: List<BrowseSection> = emptyList()
+    private val sectionIndexesByAnimeId = mutableMapOf<Long, MutableSet<Int>>()
 
     init {
         setHasStableIds(true)
@@ -25,7 +32,21 @@ class BrowseSectionAdapter(
 
     fun submitList(sections: List<BrowseSection>) {
         items = sections
+        rebuildIndex()
         notifyDataSetChanged()
+    }
+
+    fun updateSelectionState(
+        selectionMode: Boolean,
+        selectedIds: Set<Long>,
+    ) {
+        val changedIds = linkedSetOf<Long>().apply {
+            addAll(this@BrowseSectionAdapter.selectedIds)
+            addAll(selectedIds)
+        }
+        this.selectionMode = selectionMode
+        this.selectedIds = selectedIds
+        notifySectionsChanged(changedIds)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SectionViewHolder {
@@ -41,6 +62,19 @@ class BrowseSectionAdapter(
             selectionMode = selectionMode,
             selectedIds = selectedIds,
         )
+    }
+
+    override fun onBindViewHolder(holder: SectionViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.isEmpty()) {
+            onBindViewHolder(holder, position)
+            return
+        }
+        val payloadSet = payloads.filterIsInstance<String>().toSet()
+        if (PAYLOAD_SELECTION in payloadSet) {
+            holder.updateSelectionState(selectionMode, selectedIds)
+            return
+        }
+        onBindViewHolder(holder, position)
     }
 
     override fun getItemCount(): Int = items.size
@@ -77,9 +111,30 @@ class BrowseSectionAdapter(
                 if (item.subtitle.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
             posterAdapter.onLongClick = onLongClick
             posterAdapter.onSelectionToggle = onSelectionToggle
-            posterAdapter.selectionMode = selectionMode
-            posterAdapter.selectedIds = selectedIds
+            posterAdapter.updateSelectionState(selectionMode, selectedIds)
             posterAdapter.submitList(item.items)
         }
+
+        fun updateSelectionState(selectionMode: Boolean, selectedIds: Set<Long>) {
+            posterAdapter.updateSelectionState(selectionMode, selectedIds)
+        }
+    }
+
+    private fun rebuildIndex() {
+        sectionIndexesByAnimeId.clear()
+        items.forEachIndexed { sectionIndex, section ->
+            section.items.forEach { card ->
+                sectionIndexesByAnimeId
+                    .getOrPut(card.animeId) { linkedSetOf() }
+                    .add(sectionIndex)
+            }
+        }
+    }
+
+    private fun notifySectionsChanged(animeIds: Collection<Long>) {
+        animeIds.asSequence()
+            .flatMap { animeId -> sectionIndexesByAnimeId[animeId].orEmpty().asSequence() }
+            .distinct()
+            .forEach { sectionIndex -> notifyItemChanged(sectionIndex, PAYLOAD_SELECTION) }
     }
 }

@@ -497,7 +497,6 @@ class MainActivity : AppCompatActivity() {
                 .setNegativeButton("取消", null)
                 .show()
         }
-        gridAdapter.notifyDataSetChanged()
     }
 
     private fun loadMyPage() {
@@ -1385,13 +1384,9 @@ class MainActivity : AppCompatActivity() {
         }
         val selected = if (enabled && selectionMode) selectedAnimeIds.toSet() else emptySet()
         gridAdapter.onLongClick = longClickHandler
-        gridAdapter.selectionMode = enabled && selectionMode
-        gridAdapter.selectedIds = selected
+        gridAdapter.updateSelectionState(enabled && selectionMode, selected)
         sectionAdapter.onLongClick = longClickHandler
-        sectionAdapter.selectionMode = enabled && selectionMode
-        sectionAdapter.selectedIds = selected
-        gridAdapter.notifyDataSetChanged()
-        sectionAdapter.notifyDataSetChanged()
+        sectionAdapter.updateSelectionState(enabled && selectionMode, selected)
         binding.contentRecycler.post {
             restorePendingAnimeFocusIfPossible()
         }
