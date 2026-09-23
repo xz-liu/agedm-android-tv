@@ -28,6 +28,8 @@ class AgeTvApplication : Application() {
         }.start()
     }
 
+    val downloadSettings by lazy { io.agedm.tv.data.DownloadSettings(this) }
+
     val offlineDownloads: io.agedm.tv.data.OfflineDownloads by lazy { io.agedm.tv.data.OfflineDownloads(this) }
 
     val playbackStore: PlaybackStore by lazy { PlaybackStore(this) }

@@ -16,6 +16,7 @@ import io.agedm.tv.data.BangumiMatchIssue
 import io.agedm.tv.data.BangumiRematchProgress
 import io.agedm.tv.data.BangumiRematchStage
 import io.agedm.tv.data.BangumiRematchSummary
+import io.agedm.tv.data.DownloadSettings
 import io.agedm.tv.data.PlaybackStore
 import io.agedm.tv.databinding.ActivitySettingsBinding
 import io.agedm.tv.databinding.DialogBangumiRematchProgressBinding
@@ -54,6 +55,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.speedSettingButton.setOnClickListener { openSpeedSelector() }
         binding.autoNextSettingButton.setOnClickListener { toggleAutoNext() }
         binding.skipIntroSettingButton.setOnClickListener { openSkipIntroSelector() }
+        binding.downloadParallelSettingButton.setOnClickListener { openDownloadParallelSelector() }
         binding.sourceOrderSettingButton.setOnClickListener { openSourceOrderSelector() }
         binding.bangumiLoginSettingButton.setOnClickListener { openBangumiAccount() }
         binding.bangumiMatchReviewSettingButton.setOnClickListener { openBangumiMatchReview() }
@@ -70,6 +72,7 @@ class SettingsActivity : AppCompatActivity() {
         val skipIntroMs = app.playbackStore.getSkipIntroDurationMs()
         val bangumiAccount = app.bangumiAccountService.currentAccount()
 
+        binding.downloadParallelValueText.text = "${app.downloadSettings.parallelDownloads} 集"
         binding.speedValueText.text = "${formatSpeed(speed)}x"
         binding.autoNextValueText.text = if (autoNextEnabled) "开" else "关"
         binding.skipIntroValueText.text = formatSkipDuration(skipIntroMs)
@@ -88,6 +91,19 @@ class SettingsActivity : AppCompatActivity() {
         }
         renderBangumiMatchReviewSummary()
         renderBangumiIndexSummary()
+    }
+
+    private fun openDownloadParallelSelector() {
+        val values = (DownloadSettings.MIN_PARALLEL_DOWNLOADS..DownloadSettings.MAX_PARALLEL_DOWNLOADS).toList()
+        val labels = values.map { if (it == DownloadSettings.DEFAULT_PARALLEL_DOWNLOADS) "$it 集（默认）" else "$it 集" }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("同时下载集数")
+            .setSingleChoiceItems(labels, values.indexOf(app.downloadSettings.parallelDownloads)) { dialog, which ->
+                app.offlineDownloads.setParallelDownloads(values[which])
+                binding.downloadParallelValueText.text = "${values[which]} 集"
+                dialog.dismiss()
+            }
+            .show()
     }
 
     private fun openSpeedSelector() {

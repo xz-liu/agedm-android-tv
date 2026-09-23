@@ -154,7 +154,7 @@
                 android:focusable="true"
                 android:gravity="center_vertical"
                 android:nextFocusUp="@id/autoNextSettingButton"
-                android:nextFocusDown="@id/sourceOrderSettingButton"
+                android:nextFocusDown="@id/downloadParallelSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -179,6 +179,54 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="28dp"
+                android:text="下载"
+                android:textColor="@color/age_focus"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:id="@+id/downloadParallelSettingButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_focusable_small"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:nextFocusUp="@id/skipIntroSettingButton"
+                android:nextFocusDown="@id/sourceOrderSettingButton"
+                android:orientation="horizontal"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="同时下载集数"
+                    android:textColor="@color/age_text"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/downloadParallelValueText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/age_text_muted"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginTop="6dp"
+                android:text="默认同时下载 4 集，可设为 1–8 集。修改立即生效，重启后保留。"
+                android:textColor="@color/age_text_muted"
+                android:textSize="12sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
                 android:text="@string/settings_section_source"
                 android:textColor="@color/age_focus"
                 android:textSize="12sp" />
@@ -192,8 +240,8 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
-                android:nextFocusUp="@id/skipIntroSettingButton"
-                android:nextFocusDown="@id/updateSettingButton"
+                android:nextFocusUp="@id/downloadParallelSettingButton"
+                android:nextFocusDown="@id/bangumiLoginSettingButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">

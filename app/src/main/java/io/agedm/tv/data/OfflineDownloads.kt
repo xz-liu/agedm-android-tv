@@ -56,6 +56,7 @@ data class OfflineEpisode(
 /** One cache and manager per process. Download bytes are never evicted as content metadata. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class OfflineDownloads(private val context: Context) {
+    private val settings = DownloadSettings(context)
     val queue = DownloadQueue(File(context.filesDir, "download_queue.json"))
     private val database = StandaloneDatabaseProvider(context)
     val cache = SimpleCache(File(context.filesDir, "offline_media"), NoOpCacheEvictor(), database)
@@ -68,7 +69,22 @@ class OfflineDownloads(private val context: Context) {
                 .setUpstreamDataSourceFactory(httpFactory(metadata.headers)),
             executor,
         ).createDownloader(request)
-    }).apply { maxParallelDownloads = 1 }
+    }).apply { maxParallelDownloads = settings.parallelDownloads }
+
+    fun setParallelDownloads(count: Int) {
+        settings.parallelDownloads = count
+        manager.maxParallelDownloads = count
+        resumeQueue()
+    }
+
+    fun availablePreparationSlots(): Int {
+        // Include persisted requests whose handoff callback has not reached the manager yet.
+        val transfers = index.getDownloads(Download.STATE_QUEUED, Download.STATE_DOWNLOADING, Download.STATE_RESTARTING).use { cursor ->
+            buildMap { while (cursor.moveToNext()) put(cursor.download.request.id, cursor.download.state) }.toMutableMap()
+        }
+        manager.currentDownloads.forEach { transfers[it.request.id] = it.state }
+        return availableDownloadSlots(transfers.values, manager.maxParallelDownloads)
+    }
 
     fun all(): List<Download> = index.getDownloads().use { cursor ->
         buildList { while (cursor.moveToNext()) add(cursor.download) }

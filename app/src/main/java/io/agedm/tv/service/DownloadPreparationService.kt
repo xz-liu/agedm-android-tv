@@ -17,7 +17,7 @@ import io.agedm.tv.ui.MainActivity
 import io.agedm.tv.ui.WebStreamResolver
 import kotlinx.coroutines.*
 
-/** Resolves one episode at a time, just before transfer, so later URLs do not expire in a long batch. */
+/** Fills available transfer slots; resolves URLs only when they can start downloading. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class DownloadPreparationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -62,9 +62,8 @@ class DownloadPreparationService : Service() {
                         continue
                     }
                     if (!store.manager.isInitialized || store.manager.notMetRequirements != 0 ||
-                        store.manager.currentDownloads.any { it.state == Download.STATE_DOWNLOADING ||
-                            it.state == Download.STATE_QUEUED || it.state == Download.STATE_RESTARTING || it.state == Download.STATE_REMOVING }) {
-                        updateNotification(if (store.manager.notMetRequirements != 0) "等待网络，已保留下载队列" else "等待当前分集下载，后续剧集将自动开始")
+                        existing?.state == Download.STATE_REMOVING || store.availablePreparationSlots() == 0) {
+                        updateNotification(if (store.manager.notMetRequirements != 0) "等待网络，已保留下载队列" else "并行上限 ${store.manager.maxParallelDownloads} 集，有空位后自动开始")
                         delay(1000)
                         continue
                     }

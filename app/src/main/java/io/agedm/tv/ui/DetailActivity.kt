@@ -273,7 +273,7 @@ class DetailActivity : AppCompatActivity() {
             val added = app.offlineDownloads.queueEpisodes(loaded, source, episodes)
             binding.downloadStatusText.isVisible = true
             binding.downloadStatusText.text = if (added == 0) "所选剧集已在下载队列中" else {
-                "已加入 $added 集 · 后台依次下载，可在下载分区查看"
+                "已加入 $added 集 · 后台下载，可在下载分区查看"
             }
             if (downloadSelection.active) exitDownloadSelection()
         } catch (error: Exception) {

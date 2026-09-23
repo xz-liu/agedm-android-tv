@@ -27,6 +27,16 @@ import org.robolectric.annotation.GraphicsMode
 class DownloadUiTest {
     private fun parent() = FrameLayout(ContextThemeWrapper(RuntimeEnvironment.getApplication(), R.style.Theme_AgeTv))
 
+    @Test fun parallelSettingIsReachableFromPlaybackAndSourceRows() {
+        val context = parent().context
+        val binding = io.agedm.tv.databinding.ActivitySettingsBinding.inflate(android.view.LayoutInflater.from(context))
+        assertTrue(binding.downloadParallelSettingButton.isFocusable)
+        assertEquals(binding.downloadParallelSettingButton.id, binding.skipIntroSettingButton.nextFocusDownId)
+        assertEquals(binding.skipIntroSettingButton.id, binding.downloadParallelSettingButton.nextFocusUpId)
+        assertEquals(binding.sourceOrderSettingButton.id, binding.downloadParallelSettingButton.nextFocusDownId)
+        assertEquals(binding.downloadParallelSettingButton.id, binding.sourceOrderSettingButton.nextFocusUpId)
+    }
+
     @Test fun longPressSelectsOriginalEpisodeWithoutStartingPlayback() {
         var played: Int? = null
         var selected: Int? = null
