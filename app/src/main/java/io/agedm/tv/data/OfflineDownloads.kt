@@ -2,13 +2,21 @@ package io.agedm.tv.data
 
 import android.content.Context
 import android.os.StatFs
+import android.net.Uri
+import androidx.media3.common.C
+import androidx.media3.common.util.Util
+import androidx.media3.common.util.UriUtil
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.exoplayer.hls.playlist.HlsMediaPlaylist
+import androidx.media3.exoplayer.hls.playlist.HlsPlaylistParser
+import androidx.media3.exoplayer.upstream.ParsingLoadable
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.offline.DefaultDownloadIndex
 import androidx.media3.exoplayer.offline.DefaultDownloaderFactory
@@ -64,11 +72,13 @@ class OfflineDownloads(private val context: Context) {
     private val executor = Executor { it.run() }
     val manager = DownloadManager(context, index, DownloaderFactory { request ->
         val metadata = OfflineEpisode.decode(request)
-        DefaultDownloaderFactory(
-            CacheDataSource.Factory().setCache(cache)
-                .setUpstreamDataSourceFactory(httpFactory(metadata.headers)),
-            executor,
-        ).createDownloader(request)
+        val factory = CacheDataSource.Factory().setCache(cache)
+            .setUpstreamDataSourceFactory(httpFactory(metadata.headers))
+        if (Util.inferContentTypeForUriAndMimeType(request.uri, request.mimeType) == C.CONTENT_TYPE_HLS) {
+            SnapshotHlsDownloader(request.toMediaItem(), factory, executor)
+        } else {
+            DefaultDownloaderFactory(factory, executor).createDownloader(request)
+        }
     }).apply { maxParallelDownloads = settings.parallelDownloads }
 
     fun setParallelDownloads(count: Int) {
@@ -171,7 +181,33 @@ class OfflineDownloads(private val context: Context) {
         } finally { source.close() }
         if (count == 0) throw IOException("下载缓存为空")
         val mimeType = detectMediaMimeType(request.uri.toString(), prefix = prefix.copyOf(count)) ?: request.mimeType
-        request.toMediaItem().buildUpon().setMimeType(mimeType).build()
+        // Old HlsDownloader fetched a redirected media playlist a second time and downloaded
+        // that second snapshot's segments. Reuse it locally; no deletion or network repair.
+        val redirected = ContentMetadata.getRedirectedUri(cache.getContentMetadata(request.customCacheKey ?: request.uri.toString()))
+        val playbackUri = if (mimeType == MimeTypes.APPLICATION_M3U8 && redirected != null &&
+            cachedHlsSnapshotIsComplete(redirected)) redirected else request.uri
+        request.toMediaItem().buildUpon().setUri(playbackUri).setMimeType(mimeType).build()
+    }
+
+    private fun cachedHlsSnapshotIsComplete(uri: Uri): Boolean {
+        if (!cache.isCached(uri.toString(), 0, 1)) return false
+        return try {
+            val playlist = ParsingLoadable.load(
+                offlineDataSource().createDataSource(), HlsPlaylistParser(),
+                uri, C.DATA_TYPE_MANIFEST,
+            ) as? HlsMediaPlaylist ?: return false
+            fun hasResource(path: String, offset: Long = 0, length: Long = -1): Boolean {
+                val key = UriUtil.resolveToUri(playlist.baseUri, path).toString()
+                val size = if (length >= 0) length else ContentMetadata.getContentLength(cache.getContentMetadata(key)) - offset
+                return size > 0 && cache.isCached(key, offset, size)
+            }
+            fun hasSegment(segment: HlsMediaPlaylist.Segment): Boolean =
+                hasResource(segment.url, segment.byteRangeOffset, segment.byteRangeLength) &&
+                    (segment.fullSegmentEncryptionKeyUri?.let { hasResource(it) } ?: true)
+            playlist.hasEndTag && playlist.segments.isNotEmpty() && playlist.segments.all {
+                hasSegment(it) && (it.initializationSegment?.let(::hasSegment) ?: true)
+            }
+        } catch (_: IOException) { false }
     }
 
     suspend fun enqueue(detail: AnimeDetail, source: EpisodeSource, episode: EpisodeItem, stream: ResolvedStream) {

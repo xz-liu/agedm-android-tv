@@ -350,7 +350,7 @@ class PlayerActivity : AppCompatActivity() {
         val message = playbackFailureMessage(error, wasLocal)
         val format = player.videoFormat
         android.util.Log.e("AgePlayback", "anime=${detail?.animeId} source=${currentSource?.key} episode=${currentEpisode?.index} local=$wasLocal " +
-            "code=${error.errorCodeName} codec=${format?.codecs} mime=${format?.sampleMimeType} cause=${error.cause?.javaClass?.simpleName}")
+            "code=${error.errorCodeName} codec=${format?.codecs} mime=${format?.sampleMimeType}", error)
         binding.loadingText.isVisible = true
         binding.loadingText.text = message
         showControls()
