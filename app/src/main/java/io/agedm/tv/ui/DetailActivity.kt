@@ -178,7 +178,7 @@ class DetailActivity : AppCompatActivity() {
             }
         }
         binding.downloadManagerButton.setOnClickListener {
-            startActivity(Intent(this, DownloadsActivity::class.java))
+            startActivity(MainActivity.createDownloadsIntent(this))
         }
         binding.refreshSourcesButton.setOnClickListener { refreshSources() }
         binding.latestEpisodeButton.isVisible = true

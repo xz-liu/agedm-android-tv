@@ -90,7 +90,7 @@
             android:textColor="@color/age_text"
             android:textSize="13sp" />
         <Button
-            android:id="@+id/downloadsButton"
+            android:id="@+id/navDownloadsButton"
             android:layout_width="0dp"
             android:layout_height="42dp"
             android:layout_marginStart="6dp"
@@ -294,6 +294,15 @@
                 </FrameLayout>
             </LinearLayout>
         </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/downloadsContent"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:focusable="true"
+            android:nextFocusUp="@id/navDownloadsButton"
+            android:visibility="gone" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/contentRecycler"

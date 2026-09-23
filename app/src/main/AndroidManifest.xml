@@ -23,7 +23,6 @@
         android:theme="@style/Theme.AgeTv">
         <service android:name=".service.MediaDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync" />
-        <activity android:name=".ui.DownloadsActivity" android:exported="false" android:screenOrientation="landscape" />
         <activity android:name=".ui.OfflinePlayerActivity" android:exported="false" android:screenOrientation="landscape" />
         <activity
             android:name=".ui.LinkCastActivity"

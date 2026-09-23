@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
         UPDATE,
         RANK,
         HISTORY,
+        DOWNLOADS,
         SEARCH,
     }
 
@@ -80,6 +81,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sectionAdapter: BrowseSectionAdapter
     private lateinit var gridAdapter: PosterCardAdapter
     private lateinit var mirrorAdapter: PosterCardAdapter
+    private lateinit var downloadsPanel: DownloadsPanel
 
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -106,17 +108,19 @@ class MainActivity : AppCompatActivity() {
     private var currentVisibleCards: List<AnimeCard> = emptyList()
     private var isAppendingGridPage = false
     private val selectedAnimeIds = linkedSetOf<Long>()
-    private val navButtons: List<Button>
-        get() = listOf(
-            binding.navCastButton,
-            binding.navHomeButton,
-            binding.navCatalogButton,
-            binding.navRecommendButton,
-            binding.navUpdateButton,
-            binding.navRankButton,
-            binding.navHistoryButton,
-            binding.downloadsButton,
+    // Every navigation item gets the same focus, click, indicator and wrap behavior.
+    private val navigationTabs: Map<Button, Screen>
+        get() = linkedMapOf(
+            binding.navCastButton to Screen.CAST,
+            binding.navHomeButton to Screen.HOME,
+            binding.navCatalogButton to Screen.CATALOG,
+            binding.navRecommendButton to Screen.RECOMMEND,
+            binding.navUpdateButton to Screen.UPDATE,
+            binding.navRankButton to Screen.RANK,
+            binding.navHistoryButton to Screen.HISTORY,
+            binding.navDownloadsButton to Screen.DOWNLOADS,
         )
+    private val navButtons: List<Button> get() = navigationTabs.keys.toList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         setupRecycler()
+        downloadsPanel = DownloadsPanel(this, binding.downloadsContent, binding.navDownloadsButton.id)
         setupChrome()
         setupBottomNav()
         setupBackBehavior()
@@ -203,39 +208,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNav() {
-        binding.downloadsButton.setOnClickListener { startActivity(Intent(this, DownloadsActivity::class.java)) }
-        binding.navCastButton.setOnClickListener { openScreen(Screen.CAST) }
-        binding.navHomeButton.setOnClickListener { openScreen(Screen.HOME) }
-        binding.navCatalogButton.setOnClickListener { openScreen(Screen.CATALOG) }
-        binding.navRecommendButton.setOnClickListener { openScreen(Screen.RECOMMEND) }
-        binding.navUpdateButton.setOnClickListener { openScreen(Screen.UPDATE) }
-        binding.navRankButton.setOnClickListener { openScreen(Screen.RANK) }
-        binding.navHistoryButton.setOnClickListener { openScreen(Screen.HISTORY) }
+        navigationTabs.forEach { (button, screen) ->
+            button.setOnClickListener { openScreen(screen) }
+        }
 
         val focusListener = View.OnFocusChangeListener { view, hasFocus ->
             focusNavJob?.cancel()
             if (!hasFocus) return@OnFocusChangeListener
             if (!consumeNavFocusSwitchArm(view.id)) return@OnFocusChangeListener
-            val screen = when (view.id) {
-                R.id.navCastButton -> Screen.CAST
-                R.id.navHomeButton -> Screen.HOME
-                R.id.navCatalogButton -> Screen.CATALOG
-                R.id.navRecommendButton -> Screen.RECOMMEND
-                R.id.navUpdateButton -> Screen.UPDATE
-                R.id.navRankButton -> Screen.RANK
-                R.id.navHistoryButton -> Screen.HISTORY
-                else -> return@OnFocusChangeListener
-            }
+            val screen = navigationTabs.entries.firstOrNull { it.key.id == view.id }?.value
+                ?: return@OnFocusChangeListener
             if (screen == currentScreen) return@OnFocusChangeListener
             focusNavJob = lifecycleScope.launch {
                 delay(NAV_FOCUS_DELAY_MS)
                 if (view.isFocused && hasWindowFocus() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) openScreen(screen)
             }
         }
-        listOf(
-            binding.navCastButton, binding.navHomeButton, binding.navCatalogButton, binding.navRecommendButton,
-            binding.navUpdateButton, binding.navRankButton, binding.navHistoryButton,
-        ).forEach { it.onFocusChangeListener = focusListener }
+        navButtons.forEach { it.onFocusChangeListener = focusListener }
 
         configureNavWrapAround()
         setupNavIndicator()
@@ -309,6 +298,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleIntent(intent: Intent?): Boolean {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_DOWNLOADS, false) == true) {
+            intent.removeExtra(EXTRA_OPEN_DOWNLOADS)
+            openScreen(Screen.DOWNLOADS)
+            binding.navDownloadsButton.requestFocus()
+            return true
+        }
         val routeString = intent?.getStringExtra(EXTRA_OPEN_ROUTE)
         if (routeString.isNullOrBlank()) return false
         val route = AgeLinks.parseInput(routeString) ?: return false
@@ -342,13 +337,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openScreen(screen: Screen, page: Int = 1) {
+        focusNavJob?.cancel()
+        downloadsPanel.stop()
+        binding.downloadsContent.isVisible = false
         clearNavFocusSwitchArm()
         exitSelectionMode(silent = true)
         slideFromRight = screen.navIndex() >= currentScreen.navIndex()
         currentScreen = screen
         currentPage = page.coerceAtLeast(1)
         currentPageSize = when (screen) {
-            Screen.CAST -> 0
+            Screen.CAST, Screen.DOWNLOADS -> 0
             Screen.SEARCH -> 24
             Screen.RECOMMEND -> 100
             else -> 30
@@ -363,7 +361,24 @@ class MainActivity : AppCompatActivity() {
             Screen.RANK -> loadRank()
             Screen.HISTORY -> loadHistory()
             Screen.SEARCH -> loadSearch()
+            Screen.DOWNLOADS -> loadDownloads()
         }
+    }
+
+    private fun loadDownloads() {
+        replaceLoadRequest()
+        prepareBrowseContent()
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(visible = false)
+        currentTotal = 0
+        currentVisibleCards = emptyList()
+        binding.loadingLayout.isVisible = false
+        binding.emptyStateText.isVisible = false
+        binding.contentRecycler.isVisible = false
+        binding.downloadsContent.isVisible = true
+        downloadsPanel.start()
+        updateFocusTargets()
+        animateContentIn(binding.downloadsContent)
     }
 
     private fun loadCast() {
@@ -739,6 +754,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun prepareBrowseContent() {
+        binding.downloadsContent.isVisible = false
         binding.castContent.isVisible = false
         binding.castErrorText.isVisible = false
         binding.castQrImage.setImageDrawable(null)
@@ -763,16 +779,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun Screen.navIndex() = when (this) {
-        Screen.CAST -> 0
-        Screen.HOME -> 1
-        Screen.CATALOG -> 2
-        Screen.RECOMMEND -> 3
-        Screen.UPDATE -> 4
-        Screen.RANK -> 5
-        Screen.HISTORY -> 6
-        Screen.SEARCH -> -1
-    }
+    private fun Screen.navIndex() = navigationTabs.values.indexOf(this)
 
     private fun renderLoading(message: String) {
         prepareBrowseContent()
@@ -828,13 +835,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateBottomNav() {
         updateHistoryNavLabel()
-        binding.navCastButton.isSelected = currentScreen == Screen.CAST
-        binding.navHomeButton.isSelected = currentScreen == Screen.HOME
-        binding.navCatalogButton.isSelected = currentScreen == Screen.CATALOG
-        binding.navRecommendButton.isSelected = currentScreen == Screen.RECOMMEND
-        binding.navUpdateButton.isSelected = currentScreen == Screen.UPDATE
-        binding.navRankButton.isSelected = currentScreen == Screen.RANK
-        binding.navHistoryButton.isSelected = currentScreen == Screen.HISTORY
+        navigationTabs.forEach { (button, screen) -> button.isSelected = currentScreen == screen }
         if (currentScreen != Screen.SEARCH) slideNavIndicatorTo(currentNavButton())
     }
 
@@ -1016,6 +1017,7 @@ class MainActivity : AppCompatActivity() {
         val firstFilter = visibleFilterButtons().firstOrNull()
         val contentTarget = when {
             currentScreen == Screen.CAST -> binding.castContent.id
+            currentScreen == Screen.DOWNLOADS -> binding.downloadsContent.id
             firstFilter != null -> firstFilter.id
             else -> binding.contentRecycler.id
         }
@@ -1081,6 +1083,7 @@ class MainActivity : AppCompatActivity() {
         when {
             firstFilter != null && firstFilter.isShown -> firstFilter.requestFocus()
             currentScreen == Screen.CAST && binding.castContent.isVisible -> binding.castContent.requestFocus()
+            currentScreen == Screen.DOWNLOADS -> downloadsPanel.requestContentFocus()
             binding.contentRecycler.findFocus() != null -> binding.contentRecycler.findFocus().requestFocus()
             binding.contentRecycler.getChildAt(0) != null -> binding.contentRecycler.getChildAt(0).requestFocus()
             else -> currentNavButton().requestFocus()
@@ -1274,18 +1277,8 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
-    private fun currentNavButton(): Button {
-        return when (currentScreen) {
-            Screen.CAST -> binding.navCastButton
-            Screen.HOME -> binding.navHomeButton
-            Screen.CATALOG -> binding.navCatalogButton
-            Screen.RECOMMEND -> binding.navRecommendButton
-            Screen.UPDATE -> binding.navUpdateButton
-            Screen.RANK -> binding.navRankButton
-            Screen.HISTORY -> binding.navHistoryButton
-            Screen.SEARCH -> binding.navHomeButton
-        }
-    }
+    private fun currentNavButton(): Button =
+        navigationTabs.entries.firstOrNull { it.value == currentScreen }?.key ?: binding.navHomeButton
 
     private fun visibleFilterButtons(): List<Button> {
         return listOf(
@@ -1446,6 +1439,7 @@ class MainActivity : AppCompatActivity() {
     private fun canUseBatchSelection(): Boolean {
         return app.bangumiAccountService.isLoggedIn() &&
             currentScreen != Screen.CAST &&
+            currentScreen != Screen.DOWNLOADS &&
             currentScreen != Screen.HISTORY
     }
 
@@ -1552,6 +1546,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val EXTRA_OPEN_DOWNLOADS = "extra_open_downloads"
+
+        fun createDownloadsIntent(context: Context): Intent = Intent(context, MainActivity::class.java)
+            .putExtra(EXTRA_OPEN_DOWNLOADS, true)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
         private const val NAV_FOCUS_DELAY_MS = 300L
         private const val NAV_FOCUS_ARM_WINDOW_MS = 600L
