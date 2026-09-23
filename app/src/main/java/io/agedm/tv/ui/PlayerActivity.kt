@@ -19,6 +19,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.offline.DownloadHelper
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -37,6 +38,7 @@ import io.agedm.tv.data.SourceResolver
 import io.agedm.tv.data.loadedSupplementalProviders
 import io.agedm.tv.data.mergeDistinctSources
 import io.agedm.tv.data.orderedByPriority
+import io.agedm.tv.data.episodeIndexOrFirst
 import io.agedm.tv.databinding.ActivityPlayerBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
@@ -80,6 +82,7 @@ class PlayerActivity : AppCompatActivity() {
     private var prevKeyCode = KeyEvent.KEYCODE_UNKNOWN
     private var prev2KeyCode = KeyEvent.KEYCODE_UNKNOWN
     private var hasPlaybackStarted = false
+    private var playingDownloaded = false
     private var playbackRequestId = 0
     private var supplementalSourcesRequested = false
     private var supplementalSourceLoading = false
@@ -320,6 +323,12 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    if (playingDownloaded) {
+                        binding.loadingText.isVisible = true
+                        binding.loadingText.text = "本地下载无法读取，请在下载管理中重新下载本集"
+                        showControls()
+                        return
+                    }
                     if (!hasPlaybackStarted || player.currentPosition <= 2_000L) {
                         if (tryAlternateSource(currentEpisodeIndex, deferredSeekMs.coerceAtLeast(player.currentPosition))) {
                             return
@@ -358,12 +367,12 @@ class PlayerActivity : AppCompatActivity() {
             onAction = ::loadSupplementalSourcesManually,
         )
 
-        episodeAdapter = EpisodeAdapter { episode ->
+        episodeAdapter = EpisodeAdapter(onSelected = { episode ->
             if (drawerPreviewSourceIndex != currentSourceIndex || episode.index != currentEpisodeIndex) {
                 persistCurrentProgress()
                 beginPlayback(drawerPreviewSourceIndex, episode.index, 0L)
             }
-        }
+        })
 
         binding.sourceRecycler.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
@@ -412,11 +421,18 @@ class PlayerActivity : AppCompatActivity() {
         binding.loadingText.text = "正在读取动画详情..."
         lifecycleScope.launch {
             try {
-                val loaded = try {
-                    app.ageRepository.fetchDetail(animeId)
+                val cached = app.offlineDownloads.playbackDetail(animeId, app.ageRepository.peekDetail(animeId))
+                val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY)
+                    ?: cached?.sources?.getOrNull(intent.getIntExtra(EXTRA_SOURCE_INDEX, 1) - 1)?.key
+                val episodeIndex = intent.getIntExtra(EXTRA_EPISODE_INDEX, 1) - 1
+                val local = sourceKey?.let { app.offlineDownloads.completed(animeId, it, episodeIndex) }
+                // A completed episode starts without a detail refresh or a stream resolution request.
+                val loaded = if (local != null && cached != null) cached else try {
+                    val fresh = app.ageRepository.fetchDetail(animeId)
+                    app.offlineDownloads.playbackDetail(animeId, fresh) ?: fresh
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
-                    app.ageRepository.peekDetail(animeId) ?: throw error
+                    cached ?: throw error
                 }
                 val ordered = loaded.copy(
                     sources = loaded.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
@@ -447,7 +463,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun shouldOfferResume(record: PlaybackRecord?, detail: AnimeDetail): Boolean {
         if (record == null || record.completed || record.positionMs < 30_000L) return false
         return detail.sources.any { source ->
-            source.key == record.sourceKey && record.episodeIndex in source.episodes.indices
+            source.key == record.sourceKey && source.episodes.any { it.index == record.episodeIndex }
         }
     }
 
@@ -473,7 +489,7 @@ class PlayerActivity : AppCompatActivity() {
         if (useRecord && record != null) {
             val sourceIndex = loadedDetail.sources.indexOfFirst { it.key == record.sourceKey }
             if (sourceIndex >= 0) {
-                val episodeIndex = record.episodeIndex.coerceIn(0, loadedDetail.sources[sourceIndex].episodes.lastIndex)
+                val episodeIndex = loadedDetail.sources[sourceIndex].episodeIndexOrFirst(record.episodeIndex)
                 return sourceIndex to episodeIndex
             }
         }
@@ -482,16 +498,14 @@ class PlayerActivity : AppCompatActivity() {
         if (!preferredSourceKey.isNullOrBlank()) {
             val sourceIndex = loadedDetail.sources.indexOfFirst { it.key == preferredSourceKey }
             if (sourceIndex >= 0) {
-                val episodeIndex = (intent.getIntExtra(EXTRA_EPISODE_INDEX, 1) - 1)
-                    .coerceIn(0, loadedDetail.sources[sourceIndex].episodes.lastIndex)
+                val episodeIndex = loadedDetail.sources[sourceIndex].episodeIndexOrFirst(intent.getIntExtra(EXTRA_EPISODE_INDEX, 1) - 1)
                 return sourceIndex to episodeIndex
             }
         }
 
         val sourceIndex = (intent.getIntExtra(EXTRA_SOURCE_INDEX, 1) - 1)
             .coerceIn(0, loadedDetail.sources.lastIndex)
-        val episodeIndex = (intent.getIntExtra(EXTRA_EPISODE_INDEX, 1) - 1)
-            .coerceIn(0, loadedDetail.sources[sourceIndex].episodes.lastIndex)
+        val episodeIndex = loadedDetail.sources[sourceIndex].episodeIndexOrFirst(intent.getIntExtra(EXTRA_EPISODE_INDEX, 1) - 1)
         return sourceIndex to episodeIndex
     }
 
@@ -503,7 +517,7 @@ class PlayerActivity : AppCompatActivity() {
     ) {
         val loadedDetail = detail ?: return
         val source = loadedDetail.sources.getOrNull(sourceIndex) ?: return
-        val episode = source.episodes.getOrNull(episodeIndex) ?: return
+        val episode = source.episodes.firstOrNull { it.index == episodeIndex } ?: return
 
         playbackRequestId++
         persistCurrentProgress()
@@ -518,6 +532,7 @@ class PlayerActivity : AppCompatActivity() {
         deferredSeekMs = seekMs
         autoHideAfterReady = true
         hasPlaybackStarted = false
+        playingDownloaded = false
         maybeQueueBangumiWatching(loadedDetail)
         player.stop()
 
@@ -534,12 +549,19 @@ class PlayerActivity : AppCompatActivity() {
         resolveJob?.cancel()
         resolveJob = lifecycleScope.launch {
             try {
-                val stream = streamResolver.resolve(loadedDetail, source, episode)
-                playResolvedStream(stream)
+                val download = app.offlineDownloads.completed(loadedDetail.animeId, source.key, episode.index)
+                if (download != null) {
+                    playingDownloaded = true
+                    player.setMediaSource(DownloadHelper.createMediaSource(download.request, app.offlineDownloads.offlineDataSource()))
+                    prepareCurrentMedia()
+                } else {
+                    val stream = streamResolver.resolve(loadedDetail, source, episode)
+                    playResolvedStream(stream)
+                }
                 updatePlayerInfo()
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
-                if (tryAlternateSource(episodeIndex, seekMs)) {
+                if (!playingDownloaded && tryAlternateSource(episodeIndex, seekMs)) {
                     return@launch
                 }
                 binding.loadingText.isVisible = true
@@ -572,6 +594,10 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         player.setMediaSource(mediaSource)
+        prepareCurrentMedia()
+    }
+
+    private fun prepareCurrentMedia() {
         player.prepare()
         player.playWhenReady = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         player.playbackParameters = PlaybackParameters(playbackSpeed)
@@ -583,7 +609,7 @@ class PlayerActivity : AppCompatActivity() {
         val attemptId = playbackRequestId
         val nextSourceIndex = loadedDetail.sources.indices.firstOrNull { index ->
             index !in attemptedSourceIndices &&
-                episodeIndex in loadedDetail.sources[index].episodes.indices
+                loadedDetail.sources[index].episodes.any { it.index == episodeIndex }
         }
         if (nextSourceIndex != null) {
             val nextSource = loadedDetail.sources[nextSourceIndex]
@@ -624,7 +650,7 @@ class PlayerActivity : AppCompatActivity() {
                     refreshDrawerLists(focusSourceKey = firstNewKey)
                     val extraSourceIndex = mergedDetail.sources.indices.firstOrNull { index ->
                         index !in attemptedSourceIndices &&
-                            episodeIndex in mergedDetail.sources[index].episodes.indices
+                            mergedDetail.sources[index].episodes.any { it.index == episodeIndex }
                     }
                     if (extraSourceIndex != null) {
                         beginPlayback(
@@ -680,7 +706,7 @@ class PlayerActivity : AppCompatActivity() {
         val source = currentSource ?: return
         val episode = currentEpisode ?: return
         binding.playerTitle.text = loadedDetail.title
-        binding.playerSubtitle.text = "${source.label} · ${episode.label}"
+        binding.playerSubtitle.text = "${source.label} · ${episode.label}${if (playingDownloaded) " · 已下载" else ""}"
         binding.sourceSummary.text = "当前源：${source.label}（已尝试 ${attemptedSourceIndices.size} 个源）"
     }
 
@@ -710,7 +736,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun resolveDrawerPreviewEpisodeIndex(sourceIndex: Int): Int {
         val source = detail?.sources?.getOrNull(sourceIndex) ?: return 0
-        return currentEpisodeIndex.coerceIn(0, source.episodes.lastIndex.coerceAtLeast(0))
+        return source.episodeIndexOrFirst(currentEpisodeIndex)
     }
 
     private fun renderDrawerEpisodePreview(animate: Boolean, direction: Int) {
@@ -721,7 +747,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         val applyContent = {
             episodeAdapter.submitList(source.episodes, drawerPreviewEpisodeIndex)
-            binding.episodeRecycler.scrollToPosition(drawerPreviewEpisodeIndex)
+            binding.episodeRecycler.scrollToPosition(episodeAdapter.selectedPosition().coerceAtLeast(0))
         }
         if (!animate || !binding.episodeRecycler.isLaidOut) {
             binding.episodeRecycler.translationX = 0f
@@ -897,7 +923,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun focusEpisodeList() {
         binding.episodeRecycler.post {
             val target = binding.episodeRecycler
-                .findViewHolderForAdapterPosition(drawerPreviewEpisodeIndex.coerceAtLeast(0))
+                .findViewHolderForAdapterPosition(episodeAdapter.selectedPosition().coerceAtLeast(0))
                 ?.itemView
                 ?: binding.episodeRecycler.getChildAt(0)
             target?.requestFocus() ?: binding.episodeRecycler.requestFocus()
@@ -1023,7 +1049,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun onPlaybackEnded() {
         persistCurrentProgress(completed = true)
         val source = currentSource ?: return
-        if (autoNextEnabled && currentEpisodeIndex < source.episodes.lastIndex) {
+        if (autoNextEnabled && source.episodes.any { it.index == currentEpisodeIndex + 1 }) {
             beginPlayback(currentSourceIndex, currentEpisodeIndex + 1, 0L)
         } else {
             showControls()
@@ -1044,7 +1070,8 @@ class PlayerActivity : AppCompatActivity() {
     private fun maybeQueueBangumiCollected(source: EpisodeSource, completed: Boolean) {
         if (bangumiCollectedQueued) return
         val loadedDetail = detail ?: return
-        val totalEpisodes = source.episodes.size
+        val totalEpisodes = source.episodes.maxOfOrNull { it.index + 1 } ?: 0
+        if (source.episodes.any { it.token.isBlank() }) return // Legacy download-only metadata has no series length.
         if (totalEpisodes <= 0) return
         val thresholdEpisode = ceil(totalEpisodes * 0.75).toInt().coerceAtLeast(1)
         val episodeGatePassed = currentEpisodeIndex + 1 >= thresholdEpisode
@@ -1060,7 +1087,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun scrollEpisodeIntoView() {
         binding.episodeRecycler.post {
-            binding.episodeRecycler.scrollToPosition(currentEpisodeIndex)
+            binding.episodeRecycler.scrollToPosition(episodeAdapter.selectedPosition().coerceAtLeast(0))
         }
         binding.sourceRecycler.post {
             binding.sourceRecycler.scrollToPosition(currentSourceIndex)
@@ -1068,6 +1095,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun navigateBackToDetail() {
+        if (intent.getBooleanExtra(EXTRA_RETURN_TO_DOWNLOADS, false)) { finish(); return }
         val animeId = detail?.animeId ?: intent.getLongExtra(EXTRA_ANIME_ID, 0L)
         if (animeId > 0L) {
             startActivity(
@@ -1085,6 +1113,7 @@ class PlayerActivity : AppCompatActivity() {
 
     companion object {
         private const val CONTROLS_AUTO_HIDE_MS = 4_000L
+        private const val EXTRA_RETURN_TO_DOWNLOADS = "extra_return_to_downloads"
         private const val EXTRA_ANIME_ID = "extra_anime_id"
         private const val EXTRA_SOURCE_INDEX = "extra_source_index"
         private const val EXTRA_EPISODE_INDEX = "extra_episode_index"
@@ -1099,8 +1128,10 @@ class PlayerActivity : AppCompatActivity() {
             preferredSourceKey: String? = null,
             resumePositionMs: Long = 0L,
             preferResumePrompt: Boolean = true,
+            returnToDownloads: Boolean = false,
         ): Intent {
             return Intent(context, PlayerActivity::class.java)
+                .putExtra(EXTRA_RETURN_TO_DOWNLOADS, returnToDownloads)
                 .putExtra(EXTRA_ANIME_ID, animeId)
                 .putExtra(EXTRA_SOURCE_INDEX, sourceIndex)
                 .putExtra(EXTRA_EPISODE_INDEX, episodeIndex)

@@ -22,10 +22,12 @@ import io.agedm.tv.AgeTvApplication
 import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AgeRelatedItem
 import io.agedm.tv.data.AnimeCard
+import io.agedm.tv.data.episodeIndexOrFirst
 import io.agedm.tv.data.AnimeDetail
 import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.data.BangumiComment
 import io.agedm.tv.data.BangumiMetadata
+import io.agedm.tv.data.EpisodeDownloadSelection
 import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.SUPPLEMENTAL_PROVIDER_IDS
@@ -39,9 +41,7 @@ import io.agedm.tv.databinding.ActivityDetailBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 
 class DetailActivity : AppCompatActivity() {
@@ -56,8 +56,7 @@ class DetailActivity : AppCompatActivity() {
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
 
-    private var downloadResolver: WebStreamResolver? = null
-    private var downloadJob: Job? = null
+    private val downloadSelection = EpisodeDownloadSelection()
     private var detail: AnimeDetail? = null
     private var selectedSourceIndex: Int = 0
     private var selectedEpisodeIndex: Int = 0
@@ -76,6 +75,10 @@ class DetailActivity : AppCompatActivity() {
         binding = ActivityDetailBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        savedInstanceState?.getString("download_source")?.let {
+            downloadSelection.begin(it)
+            downloadSelection.selectAll(savedInstanceState.getIntArray("download_indices")?.toList().orEmpty())
+        }
         setupLists()
         setupButtons()
         setupBackBehavior()
@@ -97,11 +100,10 @@ class DetailActivity : AppCompatActivity() {
         }
     }
 
-    override fun onDestroy() {
-        downloadJob?.cancel()
-        downloadResolver?.release()
-        downloadResolver = null
-        super.onDestroy()
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("download_source", downloadSelection.sourceKey)
+        outState.putIntArray("download_indices", downloadSelection.indices.toIntArray())
     }
 
     private fun setupLists() {
@@ -110,7 +112,7 @@ class DetailActivity : AppCompatActivity() {
             onFocused = ::onSourceFocused,
             onAction = ::onLoadSupplementalSources,
         )
-        episodeAdapter = EpisodeAdapter(::onEpisodeSelected)
+        episodeAdapter = EpisodeAdapter(::onEpisodeSelected, ::onEpisodeLongSelected)
         relatedAdapter = PosterCardAdapter { openDetail(it.animeId) }
         similarAdapter = PosterCardAdapter { openDetail(it.animeId) }
         bangumiSimilarAdapter = PosterCardAdapter { openDetail(it.animeId) }
@@ -162,7 +164,7 @@ class DetailActivity : AppCompatActivity() {
                 )
             } else {
                 val source = loadedDetail.sources.getOrNull(selectedSourceIndex) ?: return@setOnClickListener
-                val episode = source.episodes.getOrNull(selectedEpisodeIndex) ?: return@setOnClickListener
+                val episode = source.episodes.firstOrNull { it.index == selectedEpisodeIndex } ?: return@setOnClickListener
                 launchPlayer(
                     sourceIndex = selectedSourceIndex,
                     episodeIndex = episode.index,
@@ -170,13 +172,22 @@ class DetailActivity : AppCompatActivity() {
                 )
             }
         }
-        binding.downloadEpisodesButton.setOnClickListener {
-            if (downloadJob?.isActive == true) {
-                downloadJob?.cancel()
-            } else {
-                showDownloadEpisodes()
-            }
+        binding.downloadEpisodesButton.setOnClickListener { beginDownloadSelection() }
+        binding.downloadAllButton.setOnClickListener {
+            val source = detail?.sources?.getOrNull(previewSourceIndex) ?: return@setOnClickListener
+            enqueueEpisodes(source, source.episodes)
         }
+        binding.downloadSelectedButton.setOnClickListener {
+            val source = detail?.sources?.getOrNull(previewSourceIndex) ?: return@setOnClickListener
+            if (downloadSelection.sourceKey != source.key) return@setOnClickListener
+            enqueueEpisodes(source, source.episodes.filter { it.index in downloadSelection.indices })
+        }
+        binding.selectAllEpisodesButton.setOnClickListener {
+            val source = detail?.sources?.getOrNull(previewSourceIndex) ?: return@setOnClickListener
+            downloadSelection.selectAll(source.episodes.map { it.index })
+            renderDownloadSelection()
+        }
+        binding.cancelDownloadSelectionButton.setOnClickListener { exitDownloadSelection() }
         binding.downloadManagerButton.setOnClickListener {
             startActivity(MainActivity.createDownloadsIntent(this))
         }
@@ -206,52 +217,74 @@ class DetailActivity : AppCompatActivity() {
         binding.bangumiDroppedButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.DROPPED) }
     }
 
-    private fun showDownloadEpisodes() {
-        val loaded = detail ?: return
-        val source = loaded.sources.getOrNull(previewSourceIndex) ?: return
-        val episodes = if (episodesDescending) source.episodes.reversed() else source.episodes
-        if (episodes.isEmpty()) return
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle("下载选集 · ${source.label}")
-            .setItems(episodes.map { it.label }.toTypedArray()) { _, position ->
-                prepareEpisodeDownload(loaded, source, episodes[position])
+    private fun beginDownloadSelection(initial: EpisodeItem? = null) {
+        val source = detail?.sources?.getOrNull(previewSourceIndex) ?: return
+        if (source.episodes.isEmpty()) return
+        downloadSelection.begin(source.key, initial?.index)
+        renderDownloadSelection()
+        if (initial == null) {
+            binding.episodeRecycler.post {
+                val position = if (episodesDescending) 0 else episodeAdapter.selectedPosition().coerceAtLeast(0)
+                binding.episodeRecycler.scrollToPosition(position)
+                binding.episodeRecycler.post {
+                    binding.episodeRecycler.findViewHolderForAdapterPosition(position)?.itemView?.requestFocus()
+                }
             }
-            .setNegativeButton("取消", null)
-            .create()
-        dialog.show()
-        val position = if (episodesDescending) 0 else episodes.indexOfFirst { it.index == previewEpisodeIndex }.coerceAtLeast(0)
-        dialog.listView.setSelection(position)
+        }
     }
 
-    private fun prepareEpisodeDownload(loaded: AnimeDetail, source: EpisodeSource, episode: EpisodeItem) {
-        if (downloadJob?.isActive == true) return
-        binding.downloadEpisodesButton.text = "取消准备下载"
-        binding.downloadStatusText.isVisible = true
-        binding.downloadStatusText.text = "正在准备下载 ${episode.label}…"
-        downloadJob = lifecycleScope.launch {
-            try {
-                val resolver = downloadResolver ?: WebStreamResolver(
-                    this@DetailActivity, binding.root, lifecycleScope, app.ageRepository,
-                ).also { downloadResolver = it }
-                val stream = resolver.resolve(loaded, source, episode)
-                app.offlineDownloads.enqueue(loaded, source, episode, stream)
-                binding.downloadStatusText.text = "${episode.label} 已加入下载，可在“下载管理”中查看"
-            } catch (error: TimeoutCancellationException) {
-                binding.downloadStatusText.text = "准备下载超时，请重试或切换源"
-            } catch (error: CancellationException) {
-                binding.downloadStatusText.text = "已取消准备下载"
-                throw error
-            } catch (error: Exception) {
-                binding.downloadStatusText.text = "下载未开始：${error.message.orEmpty()}"
-            } finally {
-                binding.downloadEpisodesButton.text = "下载选集"
+    private fun onEpisodeLongSelected(episode: EpisodeItem) {
+        if (!downloadSelection.active) beginDownloadSelection(episode) else {
+            val source = detail?.sources?.getOrNull(previewSourceIndex) ?: return
+            val count = downloadSelection.indices.size
+            val actions = mutableListOf<Pair<String, () -> Unit>>()
+            if (count > 0) actions += "下载所选 $count 集" to {
+                enqueueEpisodes(source, source.episodes.filter { it.index in downloadSelection.indices })
             }
+            actions += "全选 ${source.episodes.size} 集" to {
+                downloadSelection.selectAll(source.episodes.map { it.index }); renderDownloadSelection()
+            }
+            actions += "退出多选" to { exitDownloadSelection() }
+            MaterialAlertDialogBuilder(this).setTitle("已选 $count 集")
+                .setItems(actions.map { it.first }.toTypedArray()) { _, index -> actions[index].second() }.show()
+        }
+    }
+
+    private fun renderDownloadSelection() {
+        binding.downloadSelectionBar.isVisible = downloadSelection.active
+        binding.episodeSelectionHint.text = if (downloadSelection.active) {
+            "已选 ${downloadSelection.indices.size} 集 · OK 勾选，长按下载操作，返回退出"
+        } else "长按任一集可多选下载 · OK 播放"
+        binding.downloadSelectedButton.text = "下载所选（${downloadSelection.indices.size}）"
+        binding.downloadSelectedButton.isEnabled = downloadSelection.indices.isNotEmpty()
+        episodeAdapter.setMultiSelection(downloadSelection.indices.takeIf { downloadSelection.active })
+    }
+
+    private fun exitDownloadSelection() {
+        downloadSelection.clear()
+        renderDownloadSelection()
+        binding.episodeRecycler.findFocus()?.requestFocus() ?: binding.downloadEpisodesButton.requestFocus()
+    }
+
+    private fun enqueueEpisodes(source: EpisodeSource, episodes: List<EpisodeItem>) {
+        val loaded = detail ?: return
+        if (episodes.isEmpty()) return
+        try {
+            val added = app.offlineDownloads.queueEpisodes(loaded, source, episodes)
+            binding.downloadStatusText.isVisible = true
+            binding.downloadStatusText.text = if (added == 0) "所选剧集已在下载队列中" else {
+                "已加入 $added 集 · 后台依次下载，可在下载分区查看"
+            }
+            if (downloadSelection.active) exitDownloadSelection()
+        } catch (error: Exception) {
+            binding.downloadStatusText.isVisible = true
+            binding.downloadStatusText.text = "加入下载失败：${error.message.orEmpty()}"
         }
     }
 
     private fun setupBackBehavior() {
         onBackPressedDispatcher.addCallback(this) {
-            finish()
+            if (downloadSelection.active) exitDownloadSelection() else finish()
         }
     }
 
@@ -287,7 +320,7 @@ class DetailActivity : AppCompatActivity() {
         sourceRefreshLoading = true
         lifecycleScope.launch {
             var showingCached = false
-            val cached = runCatching { app.ageRepository.peekDetail(animeId) }.getOrNull()
+            val cached = app.offlineDownloads.playbackDetail(animeId, app.ageRepository.peekDetail(animeId))
             if (cached != null) {
                 val ordered = cached.copy(
                     sources = cached.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
@@ -356,7 +389,7 @@ class DetailActivity : AppCompatActivity() {
         refreshBangumiCollectionState(loadedDetail)
 
         val record = app.playbackStore.getRecord(loadedDetail.animeId)
-        val resolvedSourceKey = preferredSourceKey ?: record?.sourceKey ?: loadedDetail.sources.firstOrNull()?.key
+        val resolvedSourceKey = preferredSourceKey ?: downloadSelection.sourceKey ?: record?.sourceKey ?: loadedDetail.sources.firstOrNull()?.key
         selectedSourceIndex = resolveSourceIndex(loadedDetail, resolvedSourceKey)
         val selectedSource = loadedDetail.sources.getOrNull(selectedSourceIndex)
         selectedEpisodeIndex = resolveEpisodeIndex(selectedSource, preferredEpisodeIndex)
@@ -493,13 +526,13 @@ class DetailActivity : AppCompatActivity() {
     private fun resolveEpisodeIndex(source: EpisodeSource?, preferredEpisodeIndex: Int? = null): Int {
         if (source == null || source.episodes.isEmpty()) return 0
         preferredEpisodeIndex?.let { index ->
-            return index.coerceIn(0, source.episodes.lastIndex)
+            return source.episodeIndexOrFirst(index)
         }
         val record = detail?.animeId?.let(app.playbackStore::getRecord)
         if (record != null && record.sourceKey == source.key) {
-            return record.episodeIndex.coerceIn(0, source.episodes.lastIndex)
+            return source.episodeIndexOrFirst(record.episodeIndex)
         }
-        return 0
+        return source.episodeIndexOrFirst(0)
     }
 
     private fun renderEpisodePreview(
@@ -507,6 +540,8 @@ class DetailActivity : AppCompatActivity() {
         animate: Boolean,
         direction: Int,
     ) {
+        downloadSelection.reconcile(source.key, source.episodes.mapTo(mutableSetOf()) { it.index })
+        renderDownloadSelection()
         val applyContent = {
             episodeAdapter.submitList(if (episodesDescending) source.episodes.reversed() else source.episodes, previewEpisodeIndex)
             binding.episodeRecycler.scrollToPosition(if (episodesDescending) 0 else episodeAdapter.selectedPosition().coerceAtLeast(0))
@@ -680,7 +715,7 @@ class DetailActivity : AppCompatActivity() {
         if (index < 0) return
         selectedSourceIndex = index
         selectedEpisodeIndex = if (previewSourceIndex == index) {
-            previewEpisodeIndex.coerceIn(0, source.episodes.lastIndex.coerceAtLeast(0))
+            source.episodeIndexOrFirst(previewEpisodeIndex)
         } else {
             resolveEpisodeIndex(source)
         }
@@ -692,6 +727,11 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun onEpisodeSelected(episode: EpisodeItem) {
+        if (downloadSelection.active) {
+            downloadSelection.toggle(episode.index)
+            renderDownloadSelection()
+            return
+        }
         val loadedDetail = detail ?: return
         val source = loadedDetail.sources.getOrNull(previewSourceIndex) ?: return
         selectedSourceIndex = previewSourceIndex

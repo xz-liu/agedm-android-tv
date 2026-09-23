@@ -207,7 +207,16 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="44dp"
                                 android:background="@drawable/bg_focusable_small"
-                                android:text="下载选集"
+                                android:text="多选下载"
+                                android:textColor="@color/age_text" />
+
+                            <Button
+                                android:id="@+id/downloadAllButton"
+                                android:layout_width="wrap_content"
+                                android:layout_height="44dp"
+                                android:layout_marginStart="10dp"
+                                android:background="@drawable/bg_focusable_small"
+                                android:text="下载全集"
                                 android:textColor="@color/age_text" />
 
                             <Button
@@ -431,6 +440,46 @@
                     android:background="@drawable/bg_focusable_small"
                     android:text="正序 · 最早在前"
                     android:textColor="@color/age_text" />
+
+                <TextView
+                    android:id="@+id/episodeSelectionHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="长按任一集可多选下载 · OK 播放"
+                    android:textColor="@color/age_text_muted"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:id="@+id/downloadSelectionBar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+                    <Button
+                        android:id="@+id/downloadSelectedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="44dp"
+                        android:background="@drawable/bg_focusable_small"
+                        android:text="下载所选"
+                        android:textColor="@color/age_text" />
+                    <Button
+                        android:id="@+id/selectAllEpisodesButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_focusable_small"
+                        android:text="全选"
+                        android:textColor="@color/age_text" />
+                    <Button
+                        android:id="@+id/cancelDownloadSelectionButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_focusable_small"
+                        android:text="退出多选"
+                        android:textColor="@color/age_text" />
+                </LinearLayout>
 
                 <androidx.recyclerview.widget.RecyclerView
                     android:id="@+id/episodeRecycler"

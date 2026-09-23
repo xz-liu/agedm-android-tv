@@ -1348,6 +1348,7 @@ class MainActivity : AppCompatActivity() {
     private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun navigateBack() {
+        if (currentScreen == Screen.DOWNLOADS && downloadsPanel.handleBack()) return
         if (selectionMode) {
             exitSelectionMode()
             return

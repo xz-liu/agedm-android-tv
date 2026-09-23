@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:layout_marginEnd="10dp" android:layout_marginBottom="10dp"
+    android:background="@drawable/bg_focusable" android:focusable="true"
+    android:focusableInTouchMode="true" android:orientation="vertical" android:padding="8dp">
+    <FrameLayout android:layout_width="match_parent" android:layout_height="196dp">
+        <ImageView android:id="@+id/posterImage" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:background="@drawable/bg_image_placeholder" android:scaleType="centerCrop" />
+        <View android:layout_width="match_parent" android:layout_height="52dp" android:layout_gravity="top"
+            android:background="@drawable/bg_poster_badge_gradient" />
+        <TextView android:id="@+id/stateText" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_margin="8dp" android:textSize="12sp" android:textStyle="bold"
+            android:textColor="@color/age_text" android:maxLines="1" android:ellipsize="end" />
+    </FrameLayout>
+    <TextView android:id="@+id/titleText" android:layout_width="match_parent" android:layout_height="40dp"
+        android:layout_marginTop="8dp" android:textSize="14sp" android:textStyle="bold"
+        android:textColor="@color/age_text" android:maxLines="2" android:ellipsize="end" />
+    <ProgressBar android:id="@+id/downloadProgress" style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent" android:layout_height="4dp" android:layout_marginTop="6dp"
+        android:progressTint="@color/age_focus" android:progressBackgroundTint="@color/age_surface_alt" android:max="100" />
+    <TextView android:id="@+id/countText" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="6dp" android:textSize="12sp" android:textColor="@color/age_text_muted" android:maxLines="1" />
+    <TextView android:id="@+id/speedText" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="3dp" android:textSize="12sp" android:textColor="@color/age_focus" android:maxLines="1" />
+</LinearLayout>

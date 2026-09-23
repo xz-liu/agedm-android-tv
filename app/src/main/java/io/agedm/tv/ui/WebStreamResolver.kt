@@ -1,7 +1,9 @@
 package io.agedm.tv.ui
 
 import android.annotation.SuppressLint
-import android.app.Activity
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
@@ -23,13 +25,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-/** Resolves a stream without starting playback. Owned and released by its screen. */
+/** Resolves a stream without starting playback. Owned and released by its activity or preparation service. */
 internal class WebStreamResolver(
-    private val activity: Activity,
-    private val host: ViewGroup,
+    private val context: Context,
+    private val host: ViewGroup?,
     private val scope: CoroutineScope,
     private val repository: AgeRepository,
 ) {
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var parserWebView: WebView? = null
     private val parserJavascriptBridge = ParserJavascriptBridge()
     private var parserPollJob: Job? = null
@@ -46,7 +49,7 @@ internal class WebStreamResolver(
             stopLoading()
             loadUrl("about:blank")
             removeJavascriptInterface(PARSER_BRIDGE_NAME)
-            host.removeView(this)
+            host?.removeView(this)
             destroy()
         }
         parserWebView = null
@@ -66,7 +69,7 @@ internal class WebStreamResolver(
         @JavascriptInterface
         fun reportMedia(requestId: Int, url: String?, pageUrl: String?) {
             if (url.isNullOrBlank()) return
-            activity.runOnUiThread {
+            mainHandler.post {
                 completeParserRequest(
                     url = url,
                     requestId = requestId,
@@ -79,7 +82,7 @@ internal class WebStreamResolver(
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupParserWebView() {
-        parserWebView = WebView(activity).apply {
+        parserWebView = WebView(context).apply {
             visibility = View.INVISIBLE
             alpha = 0f
             isFocusable = false
@@ -103,7 +106,7 @@ internal class WebStreamResolver(
                     if (isVerified) {
                         val pageUrl = request?.requestHeaders?.get("Referer")
                         val activeRequestId = parserRequest?.id ?: return@also
-                        activity.runOnUiThread {
+                        mainHandler.post {
                             completeParserRequest(
                                 url = candidate,
                                 requestId = activeRequestId,
@@ -123,7 +126,7 @@ internal class WebStreamResolver(
                 }
             }
         }
-        host.addView(parserWebView)
+        host?.addView(parserWebView)
     }
 
     suspend fun resolve(

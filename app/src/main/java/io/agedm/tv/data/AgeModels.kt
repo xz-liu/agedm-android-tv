@@ -62,6 +62,7 @@ data class PlayerJx(
     val direct: String = "",
 )
 
+@Serializable
 data class AnimeDetail(
     val animeId: Long,
     val title: String,
@@ -82,6 +83,7 @@ enum class SourceResolver {
     WEB_PAGE,
 }
 
+@Serializable
 data class EpisodeSource(
     val key: String,
     val label: String,
@@ -93,6 +95,7 @@ data class EpisodeSource(
     val matchTitle: String? = null,
 )
 
+@Serializable
 data class EpisodeItem(
     val index: Int,
     val label: String,
