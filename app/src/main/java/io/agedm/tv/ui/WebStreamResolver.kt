@@ -17,6 +17,8 @@ import io.agedm.tv.data.EpisodeItem
 import io.agedm.tv.data.EpisodeSource
 import io.agedm.tv.data.ResolvedStream
 import io.agedm.tv.data.SourceResolver
+import io.agedm.tv.data.detectMediaMimeType
+import io.agedm.tv.data.isMediaResourceUrl
 import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -67,7 +69,7 @@ internal class WebStreamResolver(
 
     private inner class ParserJavascriptBridge {
         @JavascriptInterface
-        fun reportMedia(requestId: Int, url: String?, pageUrl: String?) {
+        fun reportMedia(requestId: Int, url: String?, pageUrl: String?, mimeType: String?) {
             if (url.isNullOrBlank()) return
             mainHandler.post {
                 completeParserRequest(
@@ -75,6 +77,7 @@ internal class WebStreamResolver(
                     requestId = requestId,
                     resolvedPageUrl = pageUrl,
                     verified = true,
+                    mimeTypeHint = mimeType,
                 )
             }
         }
@@ -134,10 +137,11 @@ internal class WebStreamResolver(
         source: EpisodeSource,
         episode: EpisodeItem,
     ): ResolvedStream {
-        return when (source.resolver) {
+        val stream = when (source.resolver) {
             SourceResolver.AGE_PARSER -> resolveStreamWithAgeParser(detail, source, episode)
             SourceResolver.WEB_PAGE -> resolveStreamFromWebPage(source, episode)
         }
+        return repository.verifyStream(stream)
     }
 
     private suspend fun resolveStreamWithAgeParser(
@@ -250,6 +254,7 @@ internal class WebStreamResolver(
         requestId: Int? = null,
         resolvedPageUrl: String? = null,
         verified: Boolean = false,
+        mimeTypeHint: String? = null,
     ): Boolean {
         val activeRequest = parserRequest ?: return false
         if (requestId != null && requestId != activeRequest.id) return false
@@ -262,7 +267,8 @@ internal class WebStreamResolver(
             return false
         }
 
-        val isM3u8 = normalizedUrl.contains(".m3u8", ignoreCase = true)
+        val mimeType = detectMediaMimeType(normalizedUrl, mimeTypeHint)
+        val isM3u8 = mimeType == "application/x-mpegURL"
         val headerBaseUrl = when (activeRequest.source.resolver) {
             SourceResolver.WEB_PAGE -> normalizeParserCandidate(resolvedPageUrl) ?: activeRequest.pageUrl
             SourceResolver.AGE_PARSER -> activeRequest.pageUrl
@@ -279,7 +285,7 @@ internal class WebStreamResolver(
                 sourceLabel = activeRequest.source.label,
                 episode = activeRequest.episode,
                 isM3u8 = isM3u8,
-                mimeType = repository.inferMimeType(normalizedUrl, isM3u8),
+                mimeType = mimeType,
                 headers = headers,
             ),
         )
@@ -337,10 +343,7 @@ internal class WebStreamResolver(
             return false
         }
 
-        return lower.contains(".m3u8") ||
-            lower.contains(".mp4") ||
-            lower.contains(".flv") ||
-            lower.contains(".m4s") ||
+        return isMediaResourceUrl(url) ||
             lower.contains("bilivideo.com/upgcxcode/") ||
             lower.contains("akamaized.net/obj/")
     }
@@ -400,10 +403,10 @@ internal class WebStreamResolver(
               if (window.__agedmParserInjectionId === REQUEST_ID) return;
               window.__agedmParserInjectionId = REQUEST_ID;
 
-              function report(url, pageUrl) {
+              function report(url, pageUrl, mimeType) {
                 try {
                   if (!url) return;
-                  window[BRIDGE_NAME].reportMedia(REQUEST_ID, String(url), String(pageUrl || window.location.href));
+                  window[BRIDGE_NAME].reportMedia(REQUEST_ID, String(url), String(pageUrl || window.location.href), String(mimeType || ''));
                 } catch (e) {}
               }
 
@@ -428,12 +431,12 @@ internal class WebStreamResolver(
                   lower.endsWith('.svg');
               }
 
-              function maybeReport(url, targetWindow) {
+              function maybeReport(url, targetWindow, mimeType) {
                 const cleaned = cleanUrl(url);
                 if (!cleaned || shouldIgnore(cleaned)) return false;
                 const absolute = cleaned.startsWith('//') ? 'https:' + cleaned : cleaned;
                 if (!/^https?:\/\//i.test(absolute)) return false;
-                report(absolute, targetWindow && targetWindow.location ? targetWindow.location.href : window.location.href);
+                report(absolute, targetWindow && targetWindow.location ? targetWindow.location.href : window.location.href, mimeType);
                 return true;
               }
 
@@ -489,7 +492,7 @@ internal class WebStreamResolver(
                       return originalText.apply(this, arguments).then((text) => {
                         try {
                           if (String(text || '').trim().startsWith('#EXTM3U')) {
-                            maybeReport(this.url || '', targetWindow);
+                            maybeReport(this.url || '', targetWindow, 'application/x-mpegURL');
                           }
                         } catch (e) {}
                         return text;
@@ -506,7 +509,7 @@ internal class WebStreamResolver(
                       this.addEventListener('load', function() {
                         try {
                           if (String(this.responseText || '').trim().startsWith('#EXTM3U')) {
-                            maybeReport(args[1] || '', targetWindow);
+                            maybeReport(this.responseURL || args[1] || '', targetWindow, 'application/x-mpegURL');
                           }
                         } catch (e) {}
                       });

@@ -156,6 +156,24 @@ class OfflineDownloads(private val context: Context) {
         .setUpstreamDataSourceFactory(null)
         .setCacheWriteDataSinkFactory(null)
 
+    suspend fun playbackMediaItem(download: Download): MediaItem = withContext(Dispatchers.IO) {
+        val request = download.request
+        val source = offlineDataSource().createDataSource()
+        val prefix = ByteArray(1024)
+        var count = 0
+        try {
+            source.open(androidx.media3.datasource.DataSpec.Builder().setUri(request.uri).setKey(request.customCacheKey).build())
+            while (count < prefix.size) {
+                val read = source.read(prefix, count, prefix.size - count)
+                if (read <= 0) break
+                count += read
+            }
+        } finally { source.close() }
+        if (count == 0) throw IOException("下载缓存为空")
+        val mimeType = detectMediaMimeType(request.uri.toString(), prefix = prefix.copyOf(count)) ?: request.mimeType
+        request.toMediaItem().buildUpon().setMimeType(mimeType).build()
+    }
+
     suspend fun enqueue(detail: AnimeDetail, source: EpisodeSource, episode: EpisodeItem, stream: ResolvedStream) {
         require(StatFs(context.filesDir.path).availableBytes >= 256L * 1024 * 1024) {
             "剩余空间不足 256 MB，请先删除部分下载"
@@ -171,7 +189,7 @@ class OfflineDownloads(private val context: Context) {
             .setMimeType(stream.mimeType ?: if (stream.isM3u8) MimeTypes.APPLICATION_M3U8 else null).build()
         // Select a playable rendition instead of downloading every HLS quality.
         val helper = DownloadHelper.forMediaItem(context, mediaItem,
-            DefaultRenderersFactory(context), httpFactory(stream.headers))
+            DefaultRenderersFactory(context).setEnableDecoderFallback(true), ImageWrappedTsDataSource.Factory(httpFactory(stream.headers)))
         val request = try {
             withTimeout(30_000L) {
                 suspendCancellableCoroutine<DownloadRequest> { continuation ->

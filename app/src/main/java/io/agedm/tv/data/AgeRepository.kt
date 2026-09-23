@@ -381,6 +381,9 @@ class AgeRepository(
         }
     }
 
+    suspend fun verifyStream(stream: ResolvedStream): ResolvedStream = probeStream(
+        client.newBuilder().callTimeout(15, java.util.concurrent.TimeUnit.SECONDS).build(), stream)
+
     suspend fun resolveStream(
         detail: AnimeDetail,
         source: EpisodeSource,
@@ -443,18 +446,9 @@ class AgeRepository(
         }
     }
 
-    fun inferMimeType(url: String, isM3u8: Boolean): String? {
-        if (isM3u8) return "application/x-mpegURL"
-        val lower = url.lowercase()
-        return when {
-            lower.contains(".mp4") -> "video/mp4"
-            lower.contains(".flv") -> "video/x-flv"
-            lower.contains(".m4v") -> "video/mp4"
-            lower.contains("bilivideo.com") -> "video/mp4"
-            lower.contains("akamaized.net/obj/") -> "video/mp4"
-            else -> null
-        }
-    }
+    fun inferMimeType(url: String, isM3u8: Boolean): String? =
+        if (isM3u8) "application/x-mpegURL" else detectMediaMimeType(url)
+
 
     fun buildCoverUrl(animeId: Long): String {
         return "$DEFAULT_COVER_BASE/$animeId.jpg"

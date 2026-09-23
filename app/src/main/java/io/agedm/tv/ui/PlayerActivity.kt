@@ -19,10 +19,10 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.offline.DownloadHelper
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import io.agedm.tv.data.ImageWrappedTsDataSource
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.agedm.tv.AgeTvApplication
@@ -124,6 +124,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        playbackErrorDialog?.dismiss()
         progressJob?.cancel()
         resolveJob?.cancel()
         skipOsdJob?.cancel()
@@ -286,7 +287,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun setupPlayer() {
-        player = ExoPlayer.Builder(this).build().apply {
+        player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true)).build().apply {
             playWhenReady = true
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -324,9 +325,7 @@ class PlayerActivity : AppCompatActivity() {
 
                 override fun onPlayerError(error: PlaybackException) {
                     if (playingDownloaded) {
-                        binding.loadingText.isVisible = true
-                        binding.loadingText.text = "本地下载无法读取，请在下载管理中重新下载本集"
-                        showControls()
+                        showPlaybackFailure(error)
                         return
                     }
                     if (!hasPlaybackStarted || player.currentPosition <= 2_000L) {
@@ -334,14 +333,37 @@ class PlayerActivity : AppCompatActivity() {
                             return
                         }
                     }
-                    binding.loadingText.isVisible = true
-                    binding.loadingText.text = "播放失败：${error.errorCodeName}"
-                    showControls()
+                    showPlaybackFailure(error)
                 }
             })
         }
         binding.playerView.player = player
         binding.playerView.useController = false
+    }
+
+    private var playbackErrorDialog: androidx.appcompat.app.AlertDialog? = null
+
+    private fun showPlaybackFailure(error: PlaybackException) {
+        val wasLocal = playingDownloaded
+        val requestId = playbackRequestId
+        val seekMs = if (hasPlaybackStarted) maxOf(deferredSeekMs, player.currentPosition.coerceAtLeast(0)) else deferredSeekMs
+        val message = playbackFailureMessage(error, wasLocal)
+        val format = player.videoFormat
+        android.util.Log.e("AgePlayback", "anime=${detail?.animeId} source=${currentSource?.key} episode=${currentEpisode?.index} local=$wasLocal " +
+            "code=${error.errorCodeName} codec=${format?.codecs} mime=${format?.sampleMimeType} cause=${error.cause?.javaClass?.simpleName}")
+        binding.loadingText.isVisible = true
+        binding.loadingText.text = message
+        showControls()
+        playbackErrorDialog?.dismiss()
+        playbackErrorDialog = MaterialAlertDialogBuilder(this)
+            .setTitle(if (wasLocal) "本地播放失败" else "播放失败")
+            .setMessage(message)
+            .setPositiveButton(if (wasLocal) "在线播放本集" else "重新解析") { _, _ ->
+                if (requestId == playbackRequestId) beginPlayback(currentSourceIndex, currentEpisodeIndex, seekMs, skipDownload = wasLocal)
+            }
+            .setNeutralButton("选择播放源") { _, _ -> showControls(expandEpisodes = true) }
+            .setNegativeButton("关闭", null)
+            .show()
     }
 
     private fun setupLists() {
@@ -514,11 +536,13 @@ class PlayerActivity : AppCompatActivity() {
         episodeIndex: Int,
         seekMs: Long,
         resetAttempts: Boolean = true,
+        skipDownload: Boolean = false,
     ) {
         val loadedDetail = detail ?: return
         val source = loadedDetail.sources.getOrNull(sourceIndex) ?: return
         val episode = source.episodes.firstOrNull { it.index == episodeIndex } ?: return
 
+        playbackErrorDialog?.dismiss()
         playbackRequestId++
         persistCurrentProgress()
         if (resetAttempts) {
@@ -549,10 +573,12 @@ class PlayerActivity : AppCompatActivity() {
         resolveJob?.cancel()
         resolveJob = lifecycleScope.launch {
             try {
-                val download = app.offlineDownloads.completed(loadedDetail.animeId, source.key, episode.index)
+                val download = if (skipDownload) null else app.offlineDownloads.completed(loadedDetail.animeId, source.key, episode.index)
                 if (download != null) {
                     playingDownloaded = true
-                    player.setMediaSource(DownloadHelper.createMediaSource(download.request, app.offlineDownloads.offlineDataSource()))
+                    val item = app.offlineDownloads.playbackMediaItem(download)
+                    player.setMediaSource(DefaultMediaSourceFactory(ImageWrappedTsDataSource.Factory(app.offlineDownloads.offlineDataSource()))
+                        .createMediaSource(item))
                     prepareCurrentMedia()
                 } else {
                     val stream = streamResolver.resolve(loadedDetail, source, episode)
@@ -561,7 +587,11 @@ class PlayerActivity : AppCompatActivity() {
                 updatePlayerInfo()
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
-                if (!playingDownloaded && tryAlternateSource(episodeIndex, seekMs)) {
+                if (playingDownloaded) {
+                    showPlaybackFailure(PlaybackException("下载读取失败", error, PlaybackException.ERROR_CODE_IO_UNSPECIFIED))
+                    return@launch
+                }
+                if (tryAlternateSource(episodeIndex, seekMs)) {
                     return@launch
                 }
                 binding.loadingText.isVisible = true
@@ -587,11 +617,8 @@ class PlayerActivity : AppCompatActivity() {
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(stream.headers)
 
-        val mediaSource = if (stream.isM3u8) {
-            HlsMediaSource.Factory(httpFactory).createMediaSource(mediaItem)
-        } else {
-            ProgressiveMediaSource.Factory(httpFactory).createMediaSource(mediaItem)
-        }
+        val mediaSource = DefaultMediaSourceFactory(ImageWrappedTsDataSource.Factory(httpFactory))
+            .createMediaSource(mediaItem)
 
         player.setMediaSource(mediaSource)
         prepareCurrentMedia()
