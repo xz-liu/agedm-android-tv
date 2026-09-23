@@ -5,9 +5,10 @@ val SUPPLEMENTAL_PROVIDER_IDS: Set<String> = linkedSetOf("aafun", "dm84")
 
 fun List<EpisodeSource>.mergeDistinctSources(extraSources: List<EpisodeSource>): List<EpisodeSource> {
     if (extraSources.isEmpty()) return this
-    val seen = mapTo(linkedSetOf()) { it.key }
-    val appended = extraSources.filter { seen.add(it.key) }
-    return this + appended
+    // Fresh episodes must replace stale data even when the source key is unchanged.
+    val byKey = associateByTo(linkedMapOf()) { it.key }
+    extraSources.forEach { byKey[it.key] = it }
+    return byKey.values.toList()
 }
 
 fun List<EpisodeSource>.replaceSourcesForProvider(

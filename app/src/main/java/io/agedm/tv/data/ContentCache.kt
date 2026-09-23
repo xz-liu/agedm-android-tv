@@ -24,10 +24,7 @@ class ContentCache(
         database.getKvEntry(key, ttlMs)?.let { return it }
         val legacy = migrateLegacyEntry(key) ?: return null
         val now = System.currentTimeMillis()
-        if (now - legacy.writeTs > ttlMs) {
-            database.removeKvEntry(key)
-            return null
-        }
+        if (now - legacy.writeTs > ttlMs) return null
         database.putKvEntry(key, legacy.data, legacy.writeTs, now)
         return legacy.data
     }

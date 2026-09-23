@@ -16,7 +16,7 @@ class EpisodeAdapter(
 
     fun submitList(episodes: List<EpisodeItem>, currentIndex: Int) {
         items = episodes
-        selectedIndex = currentIndex
+        selectedIndex = episodes.indexOfFirst { it.index == currentIndex }
         notifyDataSetChanged()
     }
 

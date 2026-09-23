@@ -45,4 +45,5 @@
     <string name="section_bangumi_comments">Bangumi 吐槽箱</string>
     <string name="section_bangumi_similar">Bangumi 推荐</string>
     <string name="bangumi_empty">Bangumi 信息暂未获取</string>
+    <string name="download_channel">离线下载</string>
 </resources>

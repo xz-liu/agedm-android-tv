@@ -39,6 +39,9 @@ import io.agedm.tv.databinding.ActivityDetailBinding
 import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 
 class DetailActivity : AppCompatActivity() {
@@ -53,6 +56,8 @@ class DetailActivity : AppCompatActivity() {
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
 
+    private var downloadResolver: WebStreamResolver? = null
+    private var downloadJob: Job? = null
     private var detail: AnimeDetail? = null
     private var selectedSourceIndex: Int = 0
     private var selectedEpisodeIndex: Int = 0
@@ -60,6 +65,8 @@ class DetailActivity : AppCompatActivity() {
     private var previewEpisodeIndex: Int = 0
     private var supplementalSourceLoading = false
     private var sourceRefreshLoading = false
+    private var lastSourceRefreshMs = 0L
+    private var episodesDescending = false
     private var sourceMatchDialogLoading = false
     private var bangumiCollectionStatus: BangumiCollectionStatus? = null
     private var bangumiCollectionLoading = false
@@ -80,7 +87,21 @@ class DetailActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         app.linkCastManager.consumePendingRoute()?.let(::handleIncomingRoute)
-        detail?.let(::refreshBangumiCollectionState)
+        detail?.let { loaded ->
+            refreshBangumiCollectionState(loaded)
+            val record = app.playbackStore.getRecord(loaded.animeId)
+            binding.playButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: "立即播放"
+            if (android.os.SystemClock.elapsedRealtime() - lastSourceRefreshMs > 5 * 60_000L) {
+                refreshSources(silent = true)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        downloadJob?.cancel()
+        downloadResolver?.release()
+        downloadResolver = null
+        super.onDestroy()
     }
 
     private fun setupLists() {
@@ -149,13 +170,83 @@ class DetailActivity : AppCompatActivity() {
                 )
             }
         }
+        binding.downloadEpisodesButton.setOnClickListener {
+            if (downloadJob?.isActive == true) {
+                downloadJob?.cancel()
+            } else {
+                showDownloadEpisodes()
+            }
+        }
+        binding.downloadManagerButton.setOnClickListener {
+            startActivity(Intent(this, DownloadsActivity::class.java))
+        }
         binding.refreshSourcesButton.setOnClickListener { refreshSources() }
-        binding.continueButton.isVisible = false
+        binding.latestEpisodeButton.isVisible = true
+        binding.latestEpisodeButton.text = "播放最新集"
+        binding.latestEpisodeButton.setOnClickListener {
+            val source = detail?.sources?.getOrNull(previewSourceIndex) ?: return@setOnClickListener
+            val latest = source.episodes.lastOrNull() ?: return@setOnClickListener
+            launchPlayer(previewSourceIndex, latest.index, preferredSourceKey = source.key)
+        }
+        binding.episodeOrderButton.setOnClickListener {
+            episodesDescending = !episodesDescending
+            getPreferences(Context.MODE_PRIVATE).edit().putBoolean("episodes_descending", episodesDescending).apply()
+            binding.episodeOrderButton.text = if (episodesDescending) "倒序 · 最新在前" else "正序 · 最早在前"
+            detail?.sources?.getOrNull(previewSourceIndex)?.let {
+                episodeAdapter.submitList(if (episodesDescending) it.episodes.reversed() else it.episodes, previewEpisodeIndex)
+                binding.episodeRecycler.scrollToPosition(0)
+            }
+        }
+        episodesDescending = getPreferences(Context.MODE_PRIVATE).getBoolean("episodes_descending", false)
+        binding.episodeOrderButton.text = if (episodesDescending) "倒序 · 最新在前" else "正序 · 最早在前"
         binding.bangumiWishButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.WISH) }
         binding.bangumiDoingButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.DO) }
         binding.bangumiCollectButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.COLLECT) }
         binding.bangumiOnHoldButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.ON_HOLD) }
         binding.bangumiDroppedButton.setOnClickListener { selectBangumiCollectionStatus(BangumiCollectionStatus.DROPPED) }
+    }
+
+    private fun showDownloadEpisodes() {
+        val loaded = detail ?: return
+        val source = loaded.sources.getOrNull(previewSourceIndex) ?: return
+        val episodes = if (episodesDescending) source.episodes.reversed() else source.episodes
+        if (episodes.isEmpty()) return
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("下载选集 · ${source.label}")
+            .setItems(episodes.map { it.label }.toTypedArray()) { _, position ->
+                prepareEpisodeDownload(loaded, source, episodes[position])
+            }
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.show()
+        val position = if (episodesDescending) 0 else episodes.indexOfFirst { it.index == previewEpisodeIndex }.coerceAtLeast(0)
+        dialog.listView.setSelection(position)
+    }
+
+    private fun prepareEpisodeDownload(loaded: AnimeDetail, source: EpisodeSource, episode: EpisodeItem) {
+        if (downloadJob?.isActive == true) return
+        binding.downloadEpisodesButton.text = "取消准备下载"
+        binding.downloadStatusText.isVisible = true
+        binding.downloadStatusText.text = "正在准备下载 ${episode.label}…"
+        downloadJob = lifecycleScope.launch {
+            try {
+                val resolver = downloadResolver ?: WebStreamResolver(
+                    this@DetailActivity, binding.root, lifecycleScope, app.ageRepository,
+                ).also { downloadResolver = it }
+                val stream = resolver.resolve(loaded, source, episode)
+                app.offlineDownloads.enqueue(loaded, source, episode, stream)
+                binding.downloadStatusText.text = "${episode.label} 已加入下载，可在“下载管理”中查看"
+            } catch (error: TimeoutCancellationException) {
+                binding.downloadStatusText.text = "准备下载超时，请重试或切换源"
+            } catch (error: CancellationException) {
+                binding.downloadStatusText.text = "已取消准备下载"
+                throw error
+            } catch (error: Exception) {
+                binding.downloadStatusText.text = "下载未开始：${error.message.orEmpty()}"
+            } finally {
+                binding.downloadEpisodesButton.text = "下载选集"
+            }
+        }
     }
 
     private fun setupBackBehavior() {
@@ -166,9 +257,9 @@ class DetailActivity : AppCompatActivity() {
 
     private fun collectIncomingRoutes() {
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                app.linkCastManager.incomingRoutes.collectLatest { route ->
-                    app.linkCastManager.consumePendingRoute()
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                app.linkCastManager.incomingRoutes.collectLatest {
+                    val route = app.linkCastManager.consumePendingRoute() ?: return@collectLatest
                     handleIncomingRoute(route)
                 }
             }
@@ -193,6 +284,7 @@ class DetailActivity : AppCompatActivity() {
             showError("无效的动画 ID")
             return
         }
+        sourceRefreshLoading = true
         lifecycleScope.launch {
             var showingCached = false
             val cached = runCatching { app.ageRepository.peekDetail(animeId) }.getOrNull()
@@ -208,19 +300,32 @@ class DetailActivity : AppCompatActivity() {
                 binding.errorText.isVisible = false
                 binding.detailScrollView.isVisible = false
             }
-            runCatching { app.ageRepository.fetchDetail(animeId) }
+            runCatching { app.ageRepository.fetchDetail(animeId, forceRefresh = true) }
                 .onSuccess { loadedDetail ->
                     val orderedDetail = loadedDetail.copy(
                         sources = loadedDetail.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
                     )
+                    val previousSourceKey = detail?.sources?.getOrNull(previewSourceIndex)?.key
+                    val previousEpisodeIndex = previewEpisodeIndex.takeIf { showingCached }
                     detail = orderedDetail
-                    bindDetail(orderedDetail, requestFocus = !showingCached)
+                    lastSourceRefreshMs = android.os.SystemClock.elapsedRealtime()
+                    bindDetail(
+                        orderedDetail,
+                        requestFocus = !showingCached,
+                        preferredSourceKey = previousSourceKey,
+                        preferredEpisodeIndex = previousEpisodeIndex,
+                    )
                 }
                 .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
                     if (!showingCached) {
                         showError("详情加载失败：${error.message.orEmpty()}")
+                    } else {
+                        Toast.makeText(this@DetailActivity, "刷新失败，暂时显示缓存，可重试刷新源", Toast.LENGTH_SHORT).show()
                     }
                 }
+            sourceRefreshLoading = false
+            updateRefreshSourcesButton()
         }
     }
 
@@ -403,8 +508,8 @@ class DetailActivity : AppCompatActivity() {
         direction: Int,
     ) {
         val applyContent = {
-            episodeAdapter.submitList(source.episodes, previewEpisodeIndex)
-            binding.episodeRecycler.scrollToPosition(previewEpisodeIndex)
+            episodeAdapter.submitList(if (episodesDescending) source.episodes.reversed() else source.episodes, previewEpisodeIndex)
+            binding.episodeRecycler.scrollToPosition(if (episodesDescending) 0 else episodeAdapter.selectedPosition().coerceAtLeast(0))
         }
         if (!animate || !binding.episodeRecycler.isLaidOut) {
             binding.episodeRecycler.translationX = 0f
@@ -439,7 +544,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun onLoadSupplementalSources() {
-        if (supplementalSourceLoading) return
+        if (supplementalSourceLoading || sourceRefreshLoading) return
         val loadedDetail = detail ?: return
         supplementalSourceLoading = true
         bindSelectionPanels(preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key)
@@ -481,15 +586,14 @@ class DetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun refreshSources() {
-        if (sourceRefreshLoading) return
+    private fun refreshSources(silent: Boolean = false) {
+        if (sourceRefreshLoading || supplementalSourceLoading || sourceMatchDialogLoading) return
         val currentDetail = detail ?: return
         sourceRefreshLoading = true
         updateRefreshSourcesButton()
 
         val preferredSourceKey = currentDetail.sources.getOrNull(selectedSourceIndex)?.key
         val preferredEpisodeIndex = selectedEpisodeIndex
-        val shouldRefreshSupplemental = currentDetail.sources.loadedSupplementalProviders().isNotEmpty()
 
         lifecycleScope.launch {
             runCatching {
@@ -497,21 +601,12 @@ class DetailActivity : AppCompatActivity() {
                     animeId = currentDetail.animeId,
                     forceRefresh = true,
                 )
-                val mergedSources = if (shouldRefreshSupplemental) {
-                    refreshedDetail.sources.mergeDistinctSources(
-                        app.ageRepository.fetchSupplementalSources(
-                            animeId = currentDetail.animeId,
-                            title = refreshedDetail.title,
-                        ),
-                    )
-                } else {
-                    refreshedDetail.sources
-                }
                 refreshedDetail.copy(
-                    sources = mergedSources.orderedByPriority(app.playbackStore.getSourcePriority()),
+                    sources = refreshedDetail.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
                 )
             }.onSuccess { refreshedDetail ->
                 detail = refreshedDetail
+                lastSourceRefreshMs = android.os.SystemClock.elapsedRealtime()
                 bindDetail(
                     loadedDetail = refreshedDetail,
                     requestFocus = false,
@@ -523,9 +618,12 @@ class DetailActivity : AppCompatActivity() {
                     title = refreshedDetail.title,
                     forceRefresh = true,
                 )
-                binding.refreshSourcesButton.requestFocus()
-                Toast.makeText(this@DetailActivity, "已刷新播放源", Toast.LENGTH_SHORT).show()
+                if (!silent) {
+                    binding.refreshSourcesButton.requestFocus()
+                    Toast.makeText(this@DetailActivity, "已刷新播放源", Toast.LENGTH_SHORT).show()
+                }
             }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
                 updateRefreshSourcesButton()
                 Toast.makeText(
                     this@DetailActivity,
@@ -544,6 +642,7 @@ class DetailActivity : AppCompatActivity() {
             else io.agedm.tv.R.string.btn_refresh_sources,
         )
         binding.refreshSourcesButton.isEnabled = !sourceRefreshLoading
+        binding.latestEpisodeButton.isEnabled = !sourceRefreshLoading && detail?.sources?.getOrNull(previewSourceIndex)?.episodes?.isNotEmpty() == true
     }
 
     private fun focusSourceKey(sourceKey: String) {
@@ -566,6 +665,7 @@ class DetailActivity : AppCompatActivity() {
 
         val direction = index.compareTo(previewSourceIndex).takeIf { it != 0 } ?: 1
         previewSourceIndex = index
+        updateRefreshSourcesButton()
         previewEpisodeIndex = if (index == selectedSourceIndex) {
             selectedEpisodeIndex
         } else {
@@ -607,7 +707,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun showExternalMatchChooser(source: EpisodeSource) {
-        if (sourceMatchDialogLoading) return
+        if (sourceMatchDialogLoading || sourceRefreshLoading) return
         val loadedDetail = detail ?: return
         sourceMatchDialogLoading = true
         Toast.makeText(this, "正在检索 ${source.providerName} 对应动画...", Toast.LENGTH_SHORT).show()

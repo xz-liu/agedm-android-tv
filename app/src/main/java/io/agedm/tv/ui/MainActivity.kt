@@ -97,7 +97,7 @@ class MainActivity : AppCompatActivity() {
     private var loadRequestId: Long = 0L
     private var overlayJob: Job? = null
     private var focusNavJob: Job? = null
-    private var navFocusSwitchArmDeadlineMs: Long = 0L
+    private val navFocusGate = NavigationFocusGate(NAV_FOCUS_ARM_WINDOW_MS)
     private var lastNavUpPressUptimeMs: Long = 0L
     private var slideFromRight = true
     private var pendingFocusRestoreViewId: Int? = null
@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity() {
             binding.navUpdateButton,
             binding.navRankButton,
             binding.navHistoryButton,
+            binding.downloadsButton,
         )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,6 +141,13 @@ class MainActivity : AppCompatActivity() {
         handleIntent(intent)
     }
 
+    override fun onPause() {
+        focusNavJob?.cancel()
+        clearNavFocusSwitchArm()
+        lastNavUpPressUptimeMs = 0L
+        super.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
         updateHistoryNavLabel()
@@ -154,13 +162,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        focusNavJob?.cancel()
+        clearNavFocusSwitchArm()
         if (!hasFocus) return
         // When a dialog or another activity closes, Android restores focus to the activity
         // window. If the previously-focused view no longer exists (e.g. because the content
         // was reloaded while the dialog was open), focus can land on the wrong nav button
-        // and trigger focusNavJob to switch screens. Cancel the job and correct focus here.
-        focusNavJob?.cancel()
-        clearNavFocusSwitchArm()
+        // and trigger focusNavJob to switch screens. Correct focus after cancelling above.
         binding.root.post {
             if (restorePendingAnimeFocusIfPossible()) return@post
             if (restorePendingFocusIfPossible()) return@post
@@ -195,6 +203,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNav() {
+        binding.downloadsButton.setOnClickListener { startActivity(Intent(this, DownloadsActivity::class.java)) }
         binding.navCastButton.setOnClickListener { openScreen(Screen.CAST) }
         binding.navHomeButton.setOnClickListener { openScreen(Screen.HOME) }
         binding.navCatalogButton.setOnClickListener { openScreen(Screen.CATALOG) }
@@ -204,9 +213,9 @@ class MainActivity : AppCompatActivity() {
         binding.navHistoryButton.setOnClickListener { openScreen(Screen.HISTORY) }
 
         val focusListener = View.OnFocusChangeListener { view, hasFocus ->
-            if (!hasFocus) return@OnFocusChangeListener
             focusNavJob?.cancel()
-            if (!consumeNavFocusSwitchArm()) return@OnFocusChangeListener
+            if (!hasFocus) return@OnFocusChangeListener
+            if (!consumeNavFocusSwitchArm(view.id)) return@OnFocusChangeListener
             val screen = when (view.id) {
                 R.id.navCastButton -> Screen.CAST
                 R.id.navHomeButton -> Screen.HOME
@@ -220,7 +229,7 @@ class MainActivity : AppCompatActivity() {
             if (screen == currentScreen) return@OnFocusChangeListener
             focusNavJob = lifecycleScope.launch {
                 delay(NAV_FOCUS_DELAY_MS)
-                if (view.isFocused) openScreen(screen)
+                if (view.isFocused && hasWindowFocus() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) openScreen(screen)
             }
         }
         listOf(
@@ -245,7 +254,8 @@ class MainActivity : AppCompatActivity() {
             if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && focused != null && isInNavArea(focused)) {
                 clearNavFocusSwitchArm()
                 val now = SystemClock.elapsedRealtime()
-                if (now - lastNavUpPressUptimeMs <= SETTINGS_SHORTCUT_WINDOW_MS) {
+                if (event.repeatCount > 0) return true
+                if (lastNavUpPressUptimeMs > 0L && now - lastNavUpPressUptimeMs <= SETTINGS_SHORTCUT_WINDOW_MS) {
                     lastNavUpPressUptimeMs = 0L
                     startActivity(SettingsActivity.createIntent(this))
                 } else {
@@ -257,7 +267,7 @@ class MainActivity : AppCompatActivity() {
             if (focused != null && isInNavArea(focused) &&
                 (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
             ) {
-                armNavFocusSwitch()
+                armNavFocusSwitch(focused, event.keyCode)
             } else {
                 clearNavFocusSwitchArm()
             }
@@ -288,9 +298,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun collectIncomingRoutes() {
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                app.linkCastManager.incomingRoutes.collectLatest { route ->
-                    app.linkCastManager.consumePendingRoute()
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                app.linkCastManager.incomingRoutes.collectLatest {
+                    val route = app.linkCastManager.consumePendingRoute() ?: return@collectLatest
                     showOverlayMessage("已收到手机投送：${AgeLinks.describe(route)}")
                     openRoute(route)
                 }
@@ -1077,18 +1087,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun armNavFocusSwitch() {
-        navFocusSwitchArmDeadlineMs = SystemClock.elapsedRealtime() + NAV_FOCUS_ARM_WINDOW_MS
+    private fun armNavFocusSwitch(focused: View, keyCode: Int) {
+        val buttons = navButtons
+        val index = buttons.indexOfFirst { it.id == focused.id }
+        if (index < 0) {
+            clearNavFocusSwitchArm()
+            return
+        }
+        val offset = if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1
+        val target = buttons[(index + offset + buttons.size) % buttons.size]
+        navFocusGate.arm(target.id, SystemClock.elapsedRealtime())
     }
 
-    private fun consumeNavFocusSwitchArm(): Boolean {
-        val armed = SystemClock.elapsedRealtime() <= navFocusSwitchArmDeadlineMs
-        navFocusSwitchArmDeadlineMs = 0L
-        return armed
-    }
+    private fun consumeNavFocusSwitchArm(focusedId: Int): Boolean =
+        navFocusGate.consume(focusedId, SystemClock.elapsedRealtime())
 
     private fun clearNavFocusSwitchArm() {
-        navFocusSwitchArmDeadlineMs = 0L
+        navFocusGate.clear()
     }
 
     private fun handleInfiniteGridDownPress(focused: View): Boolean {
@@ -1268,7 +1283,7 @@ class MainActivity : AppCompatActivity() {
             Screen.UPDATE -> binding.navUpdateButton
             Screen.RANK -> binding.navRankButton
             Screen.HISTORY -> binding.navHistoryButton
-            Screen.SEARCH -> binding.navCastButton
+            Screen.SEARCH -> binding.navHomeButton
         }
     }
 

@@ -254,10 +254,8 @@ class AppStorageDatabase private constructor(context: Context) :
             writeTs to value
         } ?: return null
         val now = System.currentTimeMillis()
-        if (now - result.first > ttlMs) {
-            removeKvEntry(key)
-            return null
-        }
+        // Expired data remains available to peek() when the network is unavailable.
+        if (now - result.first > ttlMs) return null
         writableDatabase.update(
             "kv_entries",
             ContentValues().apply { put("access_ts", now) },

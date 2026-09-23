@@ -78,7 +78,10 @@ class AgeRepository(
             desktopRecommendations = desktopRecommendations,
             bangumi = bangumi,
         )
-        val supplementalSources = supplementalSourceService.loadCachedSources(animeId)
+        val cachedSupplemental = supplementalSourceService.loadCachedSources(animeId)
+        val supplementalSources = if (forceRefresh && cachedSupplemental.isNotEmpty()) {
+            supplementalSourceService.fetchSources(animeId, detail.title)
+        } else cachedSupplemental
         if (supplementalSources.isEmpty()) {
             detail
         } else {
@@ -942,19 +945,7 @@ class AgeRepository(
             .toSet()
 
         val sources = video.playlists.mapNotNull { (key, rows) ->
-            val episodes = rows.mapIndexedNotNull { index, row ->
-                val title = row.getOrNull(0)?.trim().orEmpty()
-                val token = row.getOrNull(1)?.trim().orEmpty()
-                if (token.isBlank()) {
-                    null
-                } else {
-                    EpisodeItem(
-                        index = index,
-                        label = title.ifBlank { "第${index + 1}集" },
-                        token = token,
-                    )
-                }
-            }
+            val episodes = parsePlaylistEpisodes(rows)
 
             if (episodes.isEmpty()) {
                 null
@@ -1149,7 +1140,7 @@ class AgeRepository(
         private const val TTL_HOME_MS = 10 * 60 * 1000L
         private const val TTL_LIST_MS = 10 * 60 * 1000L
         private const val TTL_SEARCH_MS = 5 * 60 * 1000L
-        private const val TTL_DETAIL_MS = ContentCache.MAX_AGE_MS
+        private const val TTL_DETAIL_MS = 5 * 60 * 1000L
 
         private const val API_BASE_URL = "https://api.agedm.io/v2"
         private const val DESKTOP_BASE_URL = "https://www.agedm.io"

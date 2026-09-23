@@ -7,6 +7,7 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.Collections
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,9 +47,7 @@ class LinkCastManager(
     val mirrorState = _mirrorState.asStateFlow()
 
     fun consumePendingRoute(): AgeRoute? {
-        val route = _pendingRoute.value
-        if (route != null) _pendingRoute.value = null
-        return route
+        return _pendingRoute.getAndUpdate { null }
     }
 
     @Synchronized
