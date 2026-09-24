@@ -83,7 +83,10 @@ class DownloadPreparationService : Service() {
         try {
             updateNotification("正在准备 ${task.title} · ${task.episodeLabel}")
             val parser = resolver ?: WebStreamResolver(this, null, scope, app.ageRepository).also { resolver = it }
-            val stream = parser.resolve(task.detail(), task.source(), task.episode())
+            val resolved = parser.resolve(task.detail(), task.source(), task.episode())
+            // Validate download contents before creating a persistent request, without
+            // making this separate HTTP check a prerequisite for ordinary playback.
+            val stream = app.ageRepository.verifyDownloadStream(resolved)
             currentCoroutineContext().ensureActive()
             if (store.queue.all().none { it.id == task.id && it.state == PreparationState.PREPARING }) return
             store.enqueue(task.detail(), task.source(), task.episode(), stream)

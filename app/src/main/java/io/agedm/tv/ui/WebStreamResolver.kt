@@ -137,11 +137,12 @@ internal class WebStreamResolver(
         source: EpisodeSource,
         episode: EpisodeItem,
     ): ResolvedStream {
-        val stream = when (source.resolver) {
+        // Hand online playback directly to Media3. A second client's validation GET can
+        // consume signed URLs or reject a stream before the actual player gets to load it.
+        return when (source.resolver) {
             SourceResolver.AGE_PARSER -> resolveStreamWithAgeParser(detail, source, episode)
             SourceResolver.WEB_PAGE -> resolveStreamFromWebPage(source, episode)
         }
-        return repository.verifyStream(stream)
     }
 
     private suspend fun resolveStreamWithAgeParser(

@@ -381,7 +381,7 @@ class AgeRepository(
         }
     }
 
-    suspend fun verifyStream(stream: ResolvedStream): ResolvedStream = probeStream(
+    suspend fun verifyDownloadStream(stream: ResolvedStream): ResolvedStream = probeStream(
         client.newBuilder().callTimeout(15, java.util.concurrent.TimeUnit.SECONDS).build(), stream)
 
     suspend fun resolveStream(
