@@ -18,6 +18,7 @@ import org.json.JSONObject
 data class MirrorState(
     val query: String = "",
     val results: List<MirrorItem> = emptyList(),
+    val error: String = "",
 )
 
 data class MirrorItem(
@@ -104,7 +105,7 @@ class LinkCastManager(
         return null
     }
 
-    private class LinkCastHttpServer(
+    internal class LinkCastHttpServer(
         port: Int,
         private val onRoute: (AgeRoute) -> Unit,
         private val onMirrorUpdate: (MirrorState) -> Unit,
@@ -244,8 +245,10 @@ class LinkCastManager(
                     addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
                     addHeader("Pragma", "no-cache")
                 }
-            } catch (_: Throwable) {
-                json("[]").apply {
+            } catch (error: Exception) {
+                android.util.Log.e("AgeSearch", "Phone search failed", error)
+                val message = networkFailureMessage(error, "搜索请求失败，请检查电视网络后重试。")
+                json(JSONObject().put("error", message).toString(), Response.Status.SERVICE_UNAVAILABLE).apply {
                     addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
                     addHeader("Pragma", "no-cache")
                 }
@@ -278,7 +281,7 @@ class LinkCastManager(
                         ))
                     }
                 }
-                onMirrorUpdate(MirrorState(query, items))
+                onMirrorUpdate(MirrorState(query, items, obj.optString("error", "")))
                 json("{\"ok\":true}")
             } catch (_: Throwable) {
                 json("{\"ok\":true}")
@@ -363,13 +366,21 @@ class LinkCastManager(
                         return;
                       }
                       spinner.style.display='block';list.innerHTML='';empty.style.display='none';
+                      empty.textContent='没有找到相关动画';
                       var controller=window.AbortController?new AbortController():null;
                       currentSearchController=controller;
                       fetch('/api/search?q='+encodeURIComponent(q)+'&t='+Date.now(),{
                         cache:'no-store',
                         signal:controller?controller.signal:undefined
                       })
-                        .then(function(r){return r.json()})
+                        .then(function(r){return r.json().then(function(data){
+                          if(!r.ok){
+                            var failure=new Error('Search failed');
+                            failure.searchMessage=data.error||'搜索请求失败，请稍后重试。';
+                            throw failure;
+                          }
+                          return data;
+                        })})
                         .then(function(items){
                           if(requestId!==activeSearchSeq||input.value.trim()!==q){return}
                           if(currentSearchController===controller){currentSearchController=null}
@@ -391,8 +402,10 @@ class LinkCastManager(
                           if(currentSearchController===controller){currentSearchController=null}
                           spinner.style.display='none';
                           list.innerHTML='';
+                          var message=(error&&error.searchMessage)||'搜索请求失败，请检查与电视的连接后重试。';
+                          empty.textContent=message;
                           empty.style.display='block';
-                          mirror(q, []);
+                          mirror(q, [], message);
                         });
                     }
                     function send(id,title){
@@ -402,11 +415,11 @@ class LinkCastManager(
                         .then(function(res){showToast(res.ok?('已投送：'+title):'投送失败')})
                         .catch(function(){showToast('投送失败')});
                     }
-                    function mirror(q,items){
+                    function mirror(q,items,error){
                       fetch('/api/mirror',{
                         method:'POST',
                         headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({query:q,results:items||[]})
+                        body:JSON.stringify({query:q,results:items||[],error:error||''})
                       }).catch(function(){});
                     }
                     function showToast(msg){

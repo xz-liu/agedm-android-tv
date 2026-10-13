@@ -815,7 +815,8 @@ class MainActivity : AppCompatActivity() {
         preserveContent: Boolean = false,
     ) {
         if (requestId != loadRequestId || isCancellationError(error)) return
-        val message = if (error.message.isNullOrBlank()) prefix else "$prefix：${error.message.orEmpty()}"
+        val message = io.agedm.tv.data.networkFailureMessage(error,
+            if (error.message.isNullOrBlank()) prefix else "$prefix：${error.message.orEmpty()}")
         if (preserveContent) {
             showOverlayMessage(message)
         } else {
@@ -1196,7 +1197,8 @@ class MainActivity : AppCompatActivity() {
             } catch (error: Throwable) {
                 if (!shouldHandleLoadResult(requestId) || isCancellationError(error)) return@launch
                 val prefix = currentLoadMoreErrorPrefix()
-                val message = error.message?.takeIf { it.isNotBlank() }?.let { "$prefix：$it" } ?: prefix
+                val message = io.agedm.tv.data.networkFailureMessage(error,
+                    error.message?.takeIf { it.isNotBlank() }?.let { "$prefix：$it" } ?: prefix)
                 showOverlayMessage(message)
             } finally {
                 isAppendingGridPage = false
@@ -1337,7 +1339,9 @@ class MainActivity : AppCompatActivity() {
         val hasResults = cards.isNotEmpty()
         binding.mirrorRecycler.isVisible = hasResults
         binding.mirrorEmptyText.isVisible = !hasResults
-        binding.mirrorEmptyText.text = if (hasQuery) "没有找到相关动画" else "搜索结果会实时显示在这里"
+        binding.mirrorEmptyText.text = state.error.ifBlank {
+            if (hasQuery) "没有找到相关动画" else "搜索结果会实时显示在这里"
+        }
 
         if (hasResults) {
             binding.mirrorRecycler.alpha = 0f

@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
+    <!-- AGE's October 2026 certificate chains to this public CA, which older TVs lack.
+         Keep platform trust and hostname verification; scope the extra root to AGE. -->
+    <domain-config>
+        <domain includeSubdomains="true">agedm.io</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/sslcom_tls_root_2022_rsa" />
+        </trust-anchors>
+    </domain-config>
 </network-security-config>
