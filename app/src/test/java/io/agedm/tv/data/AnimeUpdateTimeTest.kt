@@ -44,18 +44,18 @@ class AnimeUpdateTimeTest {
 
     @Test fun siteTimeDisplaysInTvTimezoneEvenAcrossDifferentCalendarDates() {
         val now = Instant.parse("2026-11-01T17:00:00Z")
-        assertEquals("AGE 最近更新：今天 11:31（本地时间）",
+        assertEquals("AGE 最近更新：今天（周日）11:31（本地时间）",
             animeUpdateText(instant.toEpochMilli(), now, ZoneId.of("America/Indiana/Indianapolis")))
-        assertEquals("AGE 最近更新：今天 00:31（本地时间）",
+        assertEquals("AGE 最近更新：今天（周一）00:31（本地时间）",
             animeUpdateText(instant.toEpochMilli(), now, ZoneId.of("Asia/Shanghai")))
     }
 
     @Test fun yesterdayUsesCalendarDayAcrossDstAndOlderDatesStayExplicit() {
         val zone = ZoneId.of("America/New_York")
         val beforeFallback = Instant.parse("2026-11-01T05:30:00Z").toEpochMilli()
-        assertEquals("AGE 最近更新：昨天 01:30（本地时间）",
+        assertEquals("AGE 最近更新：昨天（周日）01:30（本地时间）",
             animeUpdateText(beforeFallback, Instant.parse("2026-11-02T06:00:00Z"), zone))
-        assertEquals("AGE 最近更新：2026-11-01 01:30（本地时间）",
+        assertEquals("AGE 最近更新：2026-11-01（周日）01:30（本地时间）",
             animeUpdateText(beforeFallback, Instant.parse("2027-01-01T12:00:00Z"), zone))
     }
 

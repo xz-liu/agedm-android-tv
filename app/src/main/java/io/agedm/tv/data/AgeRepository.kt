@@ -97,6 +97,12 @@ class AgeRepository(
         decodeHomeFeed(cachedGet(homeCacheKey(), TTL_HOME_MS, apiUrl("home-list")))
     }
 
+    // Optional detail metadata: callers load it independently of playable episode sources.
+    suspend fun fetchAiringWeekdays(animeId: Long, forceRefresh: Boolean = false): List<Int> = withContext(Dispatchers.IO) {
+        val body = cachedGet(homeCacheKey(), TTL_HOME_MS, apiUrl("home-list"), forceRefresh = forceRefresh)
+        json.decodeFromString<AgeHomeResponse>(body).airingWeekdays(animeId)
+    }
+
     suspend fun fetchRecommend(page: Int = 1, size: Int = 100): PagedCards = withContext(Dispatchers.IO) {
         decodeRecommend(
             body = cachedGet(recommendCacheKey(), TTL_LIST_MS, apiUrl("recommend")),

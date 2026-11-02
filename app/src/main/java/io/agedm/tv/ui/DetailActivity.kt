@@ -42,6 +42,7 @@ import io.agedm.tv.ui.adapter.EpisodeAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import io.agedm.tv.ui.adapter.SourceAdapter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class DetailActivity : AppCompatActivity() {
@@ -69,6 +70,8 @@ class DetailActivity : AppCompatActivity() {
     private var sourceMatchDialogLoading = false
     private var bangumiCollectionStatus: BangumiCollectionStatus? = null
     private var bangumiCollectionLoading = false
+    private var airingWeekdays: List<Int> = emptyList()
+    private var weeklyScheduleJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +95,7 @@ class DetailActivity : AppCompatActivity() {
         app.linkCastManager.consumePendingRoute()?.let(::handleIncomingRoute)
         detail?.let { loaded ->
             bindUpdateInfo(loaded)
+            refreshWeeklySchedule(loaded)
             refreshBangumiCollectionState(loaded)
             val record = app.playbackStore.getRecord(loaded.animeId)
             binding.playButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: "立即播放"
@@ -376,6 +380,7 @@ class DetailActivity : AppCompatActivity() {
         binding.pageTitle.text = loadedDetail.title
         binding.titleText.text = loadedDetail.title
         bindUpdateInfo(loadedDetail)
+        refreshWeeklySchedule(loadedDetail)
         buildTagPills(binding.tagsContainer, loadedDetail.tags.split(" ").filter { it.isNotBlank() })
         binding.introText.text = htmlToPlainText(loadedDetail.introHtml).ifBlank { "暂无简介" }
         binding.coverImage.loadPosterImage(loadedDetail.cover)
@@ -418,9 +423,28 @@ class DetailActivity : AppCompatActivity() {
 
     private fun bindUpdateInfo(loadedDetail: AnimeDetail) {
         binding.metaText.text = detailStatusText(loadedDetail.status, loadedDetail.updateLabel)
+        val scheduleText = animeWeeklyScheduleText(loadedDetail.status, airingWeekdays)
+        binding.weeklyScheduleText.text = scheduleText
+        binding.weeklyScheduleText.isVisible = scheduleText != null
         val updateText = animeUpdateText(loadedDetail.lastUpdatedEpochMs)
         binding.lastUpdateText.text = updateText
         binding.lastUpdateText.isVisible = updateText != null
+    }
+
+    private fun refreshWeeklySchedule(loadedDetail: AnimeDetail, forceRefresh: Boolean = false) {
+        if (loadedDetail.status.trim() != "连载" || weeklyScheduleJob?.isActive == true) return
+        weeklyScheduleJob = lifecycleScope.launch {
+            val days = try {
+                app.ageRepository.fetchAiringWeekdays(loadedDetail.animeId, forceRefresh)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                emptyList<Int>()
+            }
+            val current = detail?.takeIf { it.animeId == loadedDetail.animeId } ?: return@launch
+            airingWeekdays = days
+            bindUpdateInfo(current)
+        }
     }
 
     private fun refreshBangumiCollectionState(loadedDetail: AnimeDetail) {
@@ -632,6 +656,7 @@ class DetailActivity : AppCompatActivity() {
     private fun refreshSources(silent: Boolean = false) {
         if (sourceRefreshLoading || supplementalSourceLoading || sourceMatchDialogLoading) return
         val currentDetail = detail ?: return
+        refreshWeeklySchedule(currentDetail, forceRefresh = !silent)
         sourceRefreshLoading = true
         updateRefreshSourcesButton()
 

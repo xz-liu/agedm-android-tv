@@ -149,6 +149,15 @@
                             android:textSize="15sp" />
 
                         <TextView
+                            android:id="@+id/weeklyScheduleText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:textColor="@color/age_text_muted"
+                            android:textSize="15sp"
+                            android:visibility="gone" />
+
+                        <TextView
                             android:id="@+id/lastUpdateText"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
