@@ -52,6 +52,8 @@ class PosterCardAdapter(
 
     fun submitList(cards: List<AnimeCard>) {
         val deduplicated = cards.distinctBy { it.animeId }
+        attachedRecyclerView?.retainFocusBeforeRemoval(deduplicated.mapTo(mutableSetOf()) { it.animeId })
+        val diff = itemDiff(items, deduplicated, { a, b -> a.animeId == b.animeId })
         scoreCache.keys.retainAll(deduplicated.map { it.animeId }.toSet())
         items = deduplicated
         deduplicated.forEach { card ->
@@ -60,7 +62,7 @@ class PosterCardAdapter(
             }
         }
         rebuildIndex()
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
         restartScorePrefetch()
     }
 

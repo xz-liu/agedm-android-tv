@@ -104,6 +104,7 @@ class MainActivity : AppCompatActivity() {
     private var slideFromRight = true
     private var pendingFocusRestoreViewId: Int? = null
     private var pendingFocusRestoreAnimeId: Long? = null
+    private var focusInputVersion = 0L
     private var selectionMode = false
     private var currentVisibleCards: List<AnimeCard> = emptyList()
     private var isAppendingGridPage = false
@@ -174,7 +175,9 @@ class MainActivity : AppCompatActivity() {
         // window. If the previously-focused view no longer exists (e.g. because the content
         // was reloaded while the dialog was open), focus can land on the wrong nav button
         // and trigger focusNavJob to switch screens. Correct focus after cancelling above.
+        val inputVersion = focusInputVersion
         binding.root.post {
+            if (!hasWindowFocus() || inputVersion != focusInputVersion) return@post
             if (restorePendingAnimeFocusIfPossible()) return@post
             if (restorePendingFocusIfPossible()) return@post
             val focused = currentFocus
@@ -239,6 +242,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
+            if (event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) {
+                focusInputVersion++
+                // Explicit movement supersedes focus restoration queued by a previous screen/dialog.
+                pendingFocusRestoreViewId = null
+                pendingFocusRestoreAnimeId = null
+            }
             val focused = currentFocus
             if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && focused != null && isInNavArea(focused)) {
                 clearNavFocusSwitchArm()
@@ -698,10 +708,12 @@ class MainActivity : AppCompatActivity() {
         prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
-        binding.contentRecycler.layoutManager = LinearLayoutManager(this)
-        binding.contentRecycler.adapter = sectionAdapter
+        if (binding.contentRecycler.adapter !== sectionAdapter) {
+            binding.contentRecycler.layoutManager = LinearLayoutManager(this)
+            binding.contentRecycler.adapter = sectionAdapter
+        }
         currentVisibleCards = sections.flatMap { it.items }.distinctBy { it.animeId }
-        configureBrowseSelection()
+        configureBrowseSelection(restoreFocus = false)
         sectionAdapter.submitList(sections)
         binding.emptyStateText.isVisible = sections.isEmpty()
         binding.emptyStateText.text = emptyMessage
@@ -715,7 +727,7 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
         ensureGridRecycler()
         currentVisibleCards = items.distinctBy { it.animeId }
-        configureBrowseSelection()
+        configureBrowseSelection(restoreFocus = false)
         gridAdapter.submitList(currentVisibleCards)
         binding.emptyStateText.isVisible = currentVisibleCards.isEmpty()
         binding.emptyStateText.text = emptyMessage
@@ -1058,6 +1070,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun restorePendingAnimeFocusIfPossible(): Boolean {
         val animeId = pendingFocusRestoreAnimeId ?: return false
+        // The same anime can appear in several rows. Keep the actual focused card.
+        if (currentFocusedAnimeId() == animeId && currentFocus?.isShown == true) {
+            pendingFocusRestoreAnimeId = null
+            return true
+        }
         val target = binding.contentRecycler.findViewWithTag<View>(animeFocusTag(animeId))
         return if (target != null && target.isShown && target.isFocusable) {
             pendingFocusRestoreAnimeId = null
@@ -1191,7 +1208,7 @@ class MainActivity : AppCompatActivity() {
                 applyPagedGridResult(result, emptyMessage = currentGridEmptyMessage(), animate = false, append = true)
                 val targetIndex = (startIndex + targetColumn).coerceAtMost(currentVisibleCards.lastIndex)
                 val targetAnimeId = currentVisibleCards.getOrNull(targetIndex)?.animeId
-                if (targetAnimeId != null) {
+                if (targetAnimeId != null && currentFocus === focused && hasWindowFocus()) {
                     focusGridItem(targetIndex, targetAnimeId)
                 }
             } catch (error: Throwable) {
@@ -1253,9 +1270,11 @@ class MainActivity : AppCompatActivity() {
     private fun focusGridItem(position: Int, animeId: Long) {
         val layoutManager = binding.contentRecycler.layoutManager as? GridLayoutManager ?: return
         pendingFocusRestoreAnimeId = animeId
-        binding.contentRecycler.post {
+        binding.contentRecycler.post outer@{
+            if (pendingFocusRestoreAnimeId != animeId) return@outer
             layoutManager.scrollToPositionWithOffset(position, 0)
-            binding.contentRecycler.post {
+            binding.contentRecycler.post inner@{
+                if (pendingFocusRestoreAnimeId != animeId) return@inner
                 if (!restorePendingAnimeFocusIfPossible()) {
                     binding.contentRecycler.smoothScrollToPosition(position)
                     binding.contentRecycler.post {
@@ -1417,7 +1436,7 @@ class MainActivity : AppCompatActivity() {
         changedAnimeIds: Collection<Long> = emptyList(),
         restoreFocus: Boolean = changedAnimeIds.isEmpty(),
     ) {
-        pendingFocusRestoreAnimeId = focusAnimeId
+        if (restoreFocus) pendingFocusRestoreAnimeId = focusAnimeId
         val enabled = canUseBatchSelection()
         val longClickHandler = if (enabled) {
             { card: AnimeCard -> handleBatchSelectionLongClick(card) }

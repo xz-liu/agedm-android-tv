@@ -766,39 +766,28 @@ class PlayerActivity : AppCompatActivity() {
         return source.episodeIndexOrFirst(currentEpisodeIndex)
     }
 
+    private var renderedEpisodeSourceKey: String? = null
+
     private fun renderDrawerEpisodePreview(animate: Boolean, direction: Int) {
         val source = detail?.sources?.getOrNull(drawerPreviewSourceIndex)
         if (source == null) {
             episodeAdapter.submitList(emptyList(), 0)
             return
         }
-        val applyContent = {
-            episodeAdapter.submitList(source.episodes, drawerPreviewEpisodeIndex)
+        binding.episodeRecycler.animate().cancel()
+        val sourceChanged = renderedEpisodeSourceKey != source.key
+        episodeAdapter.submitList(source.episodes, drawerPreviewEpisodeIndex, source.key)
+        renderedEpisodeSourceKey = source.key
+        if (sourceChanged) {
             binding.episodeRecycler.scrollToPosition(episodeAdapter.selectedPosition().coerceAtLeast(0))
         }
-        if (!animate || !binding.episodeRecycler.isLaidOut) {
-            binding.episodeRecycler.translationX = 0f
-            binding.episodeRecycler.alpha = 1f
-            applyContent()
-            return
+        binding.episodeRecycler.translationX = 0f
+        binding.episodeRecycler.alpha = 1f
+        if (animate && binding.episodeRecycler.isLaidOut && !binding.episodeRecycler.hasFocus()) {
+            binding.episodeRecycler.translationX = if (direction >= 0) 40f else -40f
+            binding.episodeRecycler.alpha = 0.6f
+            binding.episodeRecycler.animate().translationX(0f).alpha(1f).setDuration(180L).start()
         }
-
-        val offset = if (direction >= 0) 40f else -40f
-        binding.episodeRecycler.animate().cancel()
-        binding.episodeRecycler.animate()
-            .translationX(-offset * 0.35f)
-            .alpha(0.25f)
-            .setDuration(90L)
-            .withEndAction {
-                binding.episodeRecycler.translationX = offset
-                applyContent()
-                binding.episodeRecycler.animate()
-                    .translationX(0f)
-                    .alpha(1f)
-                    .setDuration(180L)
-                    .start()
-            }
-            .start()
     }
 
     private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
@@ -811,6 +800,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun loadSupplementalSourcesManually() {
         if (supplementalSourceLoading) return
         val loadedDetail = detail ?: return
+        val requestFocus = currentFocus
         supplementalSourceLoading = true
         refreshDrawerLists()
         showSkipOsd("正在加载其他源...")
@@ -825,10 +815,13 @@ class PlayerActivity : AppCompatActivity() {
                 supplementalSourceLoading = false
                 val currentDetail = detail?.takeIf { it.animeId == loadedDetail.animeId } ?: return@launch
                 val (mergedDetail, firstNewKey) = mergeSupplementalSources(currentDetail, extraSources)
+                val previewKey = currentDetail.sources.getOrNull(drawerPreviewSourceIndex)?.key
                 detail = mergedDetail
+                drawerPreviewSourceIndex = mergedDetail.sources.indexOfFirst { it.key == previewKey }
+                    .takeIf { it >= 0 } ?: currentSourceIndex
                 if (firstNewKey != null) {
                     supplementalSourcesRequested = true
-                    refreshDrawerLists(focusSourceKey = firstNewKey)
+                    refreshDrawerLists(focusSourceKey = firstNewKey.takeIf { currentFocus === requestFocus && hasWindowFocus() })
                     showSkipOsd("已加载其他源")
                 } else {
                     refreshDrawerLists()
@@ -857,9 +850,12 @@ class PlayerActivity : AppCompatActivity() {
     private fun focusSourceKey(sourceKey: String) {
         val position = detail?.sources?.indexOfFirst { it.key == sourceKey } ?: -1
         if (position < 0) return
-        binding.sourceRecycler.post {
+        val origin = currentFocus
+        binding.sourceRecycler.post outer@{
+            if (currentFocus !== origin || !hasWindowFocus()) return@outer
             binding.sourceRecycler.scrollToPosition(position)
-            binding.sourceRecycler.post {
+            binding.sourceRecycler.post inner@{
+                if (currentFocus !== origin || !hasWindowFocus()) return@inner
                 binding.sourceRecycler.findViewHolderForAdapterPosition(position)
                     ?.itemView
                     ?.requestFocus()

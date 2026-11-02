@@ -63,6 +63,7 @@ class DetailActivity : AppCompatActivity() {
     private var selectedEpisodeIndex: Int = 0
     private var previewSourceIndex: Int = 0
     private var previewEpisodeIndex: Int = 0
+    private var renderedEpisodeSourceKey: String? = null
     private var supplementalSourceLoading = false
     private var sourceRefreshLoading = false
     private var lastSourceRefreshMs = 0L
@@ -209,7 +210,7 @@ class DetailActivity : AppCompatActivity() {
             getPreferences(Context.MODE_PRIVATE).edit().putBoolean("episodes_descending", episodesDescending).apply()
             binding.episodeOrderButton.text = if (episodesDescending) "倒序 · 最新在前" else "正序 · 最早在前"
             detail?.sources?.getOrNull(previewSourceIndex)?.let {
-                episodeAdapter.submitList(if (episodesDescending) it.episodes.reversed() else it.episodes, previewEpisodeIndex)
+                episodeAdapter.submitList(if (episodesDescending) it.episodes.reversed() else it.episodes, previewEpisodeIndex, it.key)
                 binding.episodeRecycler.scrollToPosition(0)
             }
         }
@@ -527,7 +528,7 @@ class DetailActivity : AppCompatActivity() {
 
         selectedEpisodeIndex = resolveEpisodeIndex(selectedSource, selectedEpisodeIndex)
         sourceAdapter.submitList(loadedDetail.sources, selectedSource.key, sourceActionLabel(loadedDetail))
-        binding.sourceRecycler.scrollToPosition(selectedSourceIndex)
+        if (!binding.sourceRecycler.hasFocus()) binding.sourceRecycler.scrollToPosition(selectedSourceIndex)
 
         val previousPreviewIndex = previewSourceIndex
         previewSourceIndex = resolveSourceIndex(loadedDetail, previewSourceKey ?: selectedSource.key)
@@ -574,33 +575,25 @@ class DetailActivity : AppCompatActivity() {
     ) {
         downloadSelection.reconcile(source.key, source.episodes.mapTo(mutableSetOf()) { it.index })
         renderDownloadSelection()
-        val applyContent = {
-            episodeAdapter.submitList(if (episodesDescending) source.episodes.reversed() else source.episodes, previewEpisodeIndex)
+        // Apply the new source immediately. An old animation must never replace newer content.
+        binding.episodeRecycler.animate().cancel()
+        val sourceChanged = renderedEpisodeSourceKey != source.key
+        episodeAdapter.submitList(
+            if (episodesDescending) source.episodes.reversed() else source.episodes,
+            previewEpisodeIndex,
+            source.key,
+        )
+        renderedEpisodeSourceKey = source.key
+        if (sourceChanged) {
             binding.episodeRecycler.scrollToPosition(if (episodesDescending) 0 else episodeAdapter.selectedPosition().coerceAtLeast(0))
         }
-        if (!animate || !binding.episodeRecycler.isLaidOut) {
-            binding.episodeRecycler.translationX = 0f
-            binding.episodeRecycler.alpha = 1f
-            applyContent()
-            return
+        binding.episodeRecycler.translationX = 0f
+        binding.episodeRecycler.alpha = 1f
+        if (animate && binding.episodeRecycler.isLaidOut && !binding.episodeRecycler.hasFocus()) {
+            binding.episodeRecycler.translationX = if (direction >= 0) 44f else -44f
+            binding.episodeRecycler.alpha = 0.6f
+            binding.episodeRecycler.animate().translationX(0f).alpha(1f).setDuration(180L).start()
         }
-
-        val offset = if (direction >= 0) 44f else -44f
-        binding.episodeRecycler.animate().cancel()
-        binding.episodeRecycler.animate()
-            .translationX(-offset * 0.35f)
-            .alpha(0.25f)
-            .setDuration(90L)
-            .withEndAction {
-                binding.episodeRecycler.translationX = offset
-                applyContent()
-                binding.episodeRecycler.animate()
-                    .translationX(0f)
-                    .alpha(1f)
-                    .setDuration(180L)
-                    .start()
-            }
-            .start()
     }
 
     private fun sourceActionLabel(loadedDetail: AnimeDetail): String? {
@@ -613,8 +606,12 @@ class DetailActivity : AppCompatActivity() {
     private fun onLoadSupplementalSources() {
         if (supplementalSourceLoading || sourceRefreshLoading) return
         val loadedDetail = detail ?: return
+        val requestFocus = currentFocus
         supplementalSourceLoading = true
-        bindSelectionPanels(preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key)
+        bindSelectionPanels(
+            preferredSourceKey = loadedDetail.sources.getOrNull(selectedSourceIndex)?.key,
+            previewSourceKey = loadedDetail.sources.getOrNull(previewSourceIndex)?.key,
+        )
 
         lifecycleScope.launch {
             runCatching {
@@ -632,14 +629,17 @@ class DetailActivity : AppCompatActivity() {
                 detail = currentDetail.copy(sources = mergedSources)
 
                 val firstNewKey = mergedSources.firstOrNull { it.key !in existingKeys }?.key
-                if (firstNewKey != null) {
+                if (firstNewKey != null && currentFocus === requestFocus && hasWindowFocus()) {
                     selectedSourceIndex = mergedSources.indexOfFirst { it.key == firstNewKey }.coerceAtLeast(0)
                     selectedEpisodeIndex = 0
                     bindSelectionPanels(preferredSourceKey = firstNewKey, focusSourceKey = firstNewKey)
                     Toast.makeText(this@DetailActivity, "已加载其他源", Toast.LENGTH_SHORT).show()
                 } else {
-                    bindSelectionPanels(preferredSourceKey = currentDetail.sources.getOrNull(selectedSourceIndex)?.key)
-                    Toast.makeText(this@DetailActivity, "没有找到新的补充源", Toast.LENGTH_SHORT).show()
+                    bindSelectionPanels(
+                        preferredSourceKey = currentDetail.sources.getOrNull(selectedSourceIndex)?.key,
+                        previewSourceKey = currentDetail.sources.getOrNull(previewSourceIndex)?.key,
+                    )
+                    Toast.makeText(this@DetailActivity, if (firstNewKey != null) "已加载其他源" else "没有找到新的补充源", Toast.LENGTH_SHORT).show()
                 }
             }.onFailure { error ->
                 supplementalSourceLoading = false
@@ -660,9 +660,6 @@ class DetailActivity : AppCompatActivity() {
         sourceRefreshLoading = true
         updateRefreshSourcesButton()
 
-        val preferredSourceKey = currentDetail.sources.getOrNull(selectedSourceIndex)?.key
-        val preferredEpisodeIndex = selectedEpisodeIndex
-
         lifecycleScope.launch {
             runCatching {
                 val refreshedDetail = app.ageRepository.fetchDetail(
@@ -673,6 +670,9 @@ class DetailActivity : AppCompatActivity() {
                     sources = refreshedDetail.sources.orderedByPriority(app.playbackStore.getSourcePriority()),
                 )
             }.onSuccess { refreshedDetail ->
+                // The user may have moved to another source while the request was in flight.
+                val preferredSourceKey = detail?.sources?.getOrNull(previewSourceIndex)?.key
+                val preferredEpisodeIndex = previewEpisodeIndex
                 detail = refreshedDetail
                 lastSourceRefreshMs = android.os.SystemClock.elapsedRealtime()
                 bindDetail(
@@ -687,7 +687,6 @@ class DetailActivity : AppCompatActivity() {
                     forceRefresh = true,
                 )
                 if (!silent) {
-                    binding.refreshSourcesButton.requestFocus()
                     Toast.makeText(this@DetailActivity, "已刷新播放源", Toast.LENGTH_SHORT).show()
                 }
             }.onFailure { error ->
@@ -709,16 +708,21 @@ class DetailActivity : AppCompatActivity() {
             if (sourceRefreshLoading) io.agedm.tv.R.string.btn_refreshing_sources
             else io.agedm.tv.R.string.btn_refresh_sources,
         )
-        binding.refreshSourcesButton.isEnabled = !sourceRefreshLoading
-        binding.latestEpisodeButton.isEnabled = !sourceRefreshLoading && detail?.sources?.getOrNull(previewSourceIndex)?.episodes?.isNotEmpty() == true
+        // Keep the focused action attached and focusable while its request is running.
+        // refreshSources already ignores duplicate activation.
+        binding.refreshSourcesButton.isEnabled = true
+        binding.latestEpisodeButton.isEnabled = detail?.sources?.getOrNull(previewSourceIndex)?.episodes?.isNotEmpty() == true
     }
 
     private fun focusSourceKey(sourceKey: String) {
         val position = detail?.sources?.indexOfFirst { it.key == sourceKey } ?: -1
         if (position < 0) return
-        binding.sourceRecycler.post {
+        val origin = currentFocus
+        binding.sourceRecycler.post outer@{
+            if (currentFocus !== origin || !hasWindowFocus()) return@outer
             binding.sourceRecycler.scrollToPosition(position)
-            binding.sourceRecycler.post {
+            binding.sourceRecycler.post inner@{
+                if (currentFocus !== origin || !hasWindowFocus()) return@inner
                 binding.sourceRecycler.findViewHolderForAdapterPosition(position)
                     ?.itemView
                     ?.requestFocus()

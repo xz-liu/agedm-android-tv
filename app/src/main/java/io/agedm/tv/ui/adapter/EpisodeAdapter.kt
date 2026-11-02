@@ -15,11 +15,35 @@ class EpisodeAdapter(
     private var items: List<EpisodeItem> = emptyList()
     private var multiSelection: Set<Int>? = null
     private var selectedIndex: Int = RecyclerView.NO_POSITION
+    private var sourceKey: String? = null
+    private val ids = StableItemIds()
+    private var recycler: RecyclerView? = null
 
-    fun submitList(episodes: List<EpisodeItem>, currentIndex: Int) {
+    init { setHasStableIds(true) }
+
+    override fun getItemId(position: Int): Long = ids.id(sourceKey to items[position].index)
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        recycler = recyclerView
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        recycler = null
+        super.onDetachedFromRecyclerView(recyclerView)
+    }
+
+    fun submitList(episodes: List<EpisodeItem>, currentIndex: Int, sourceKey: String? = null) {
+        recycler?.retainFocusBeforeRemoval(episodes.mapTo(mutableSetOf()) { ids.id(sourceKey to it.index) })
+        val sameSource = this.sourceKey == sourceKey
+        val oldSelected = items.getOrNull(selectedIndex)?.index
+        val diff = itemDiff(items, episodes, { a, b -> sameSource && a.index == b.index }) { a, b ->
+            a == b && (a.index == oldSelected) == (b.index == currentIndex)
+        }
         items = episodes
+        this.sourceKey = sourceKey
         selectedIndex = episodes.indexOfFirst { it.index == currentIndex }
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
     }
 
     fun setMultiSelection(indices: Set<Int>?) {

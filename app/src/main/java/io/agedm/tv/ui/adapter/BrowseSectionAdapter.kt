@@ -24,6 +24,7 @@ class BrowseSectionAdapter(
         private set
 
     private var items: List<BrowseSection> = emptyList()
+    private val ids = StableItemIds()
     private val sectionIndexesByAnimeId = mutableMapOf<Long, MutableSet<Int>>()
     private var lastSelectionChangedAnimeIds: Set<Long> = emptySet()
 
@@ -32,9 +33,10 @@ class BrowseSectionAdapter(
     }
 
     fun submitList(sections: List<BrowseSection>) {
+        val diff = itemDiff(items, sections, { a, b -> a.title == b.title })
         items = sections
         rebuildIndex()
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
     }
 
     fun updateSelectionState(
@@ -82,7 +84,7 @@ class BrowseSectionAdapter(
 
     override fun getItemId(position: Int): Long {
         val item = items[position]
-        return "${item.title}|${item.subtitle}".hashCode().toLong()
+        return ids.id(item.title)
     }
 
     class SectionViewHolder(

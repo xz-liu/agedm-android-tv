@@ -20,18 +20,34 @@ class SourceAdapter(
 
     private var items: List<RowItem> = emptyList()
     private var selectedKey: String? = null
+    private val ids = StableItemIds()
+
+    init { setHasStableIds(true) }
+
+    private fun RowItem.identity(): Any = when (this) {
+        is RowItem.Source -> source.key
+        is RowItem.Action -> Unit
+    }
+
+    override fun getItemId(position: Int): Long = ids.id(items[position].identity())
 
     fun submitList(
         sources: List<EpisodeSource>,
         currentKey: String?,
         actionLabel: String? = null,
     ) {
-        items = buildList {
+        val updated = buildList {
             addAll(sources.map(RowItem::Source))
             actionLabel?.takeIf { it.isNotBlank() }?.let { add(RowItem.Action(it)) }
         }
+        val oldKey = selectedKey
+        val diff = itemDiff(items, updated, { a, b -> a.identity() == b.identity() }) { a, b ->
+            a == b && ((a as? RowItem.Source)?.source?.key == oldKey) ==
+                ((b as? RowItem.Source)?.source?.key == currentKey)
+        }
+        items = updated
         selectedKey = currentKey
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SourceViewHolder {
