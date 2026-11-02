@@ -91,6 +91,7 @@ class DetailActivity : AppCompatActivity() {
         super.onResume()
         app.linkCastManager.consumePendingRoute()?.let(::handleIncomingRoute)
         detail?.let { loaded ->
+            bindUpdateInfo(loaded)
             refreshBangumiCollectionState(loaded)
             val record = app.playbackStore.getRecord(loaded.animeId)
             binding.playButton.text = record?.let { "继续 ${it.episodeLabel}" } ?: "立即播放"
@@ -374,7 +375,7 @@ class DetailActivity : AppCompatActivity() {
 
         binding.pageTitle.text = loadedDetail.title
         binding.titleText.text = loadedDetail.title
-        binding.metaText.text = loadedDetail.status
+        bindUpdateInfo(loadedDetail)
         buildTagPills(binding.tagsContainer, loadedDetail.tags.split(" ").filter { it.isNotBlank() })
         binding.introText.text = htmlToPlainText(loadedDetail.introHtml).ifBlank { "暂无简介" }
         binding.coverImage.loadPosterImage(loadedDetail.cover)
@@ -413,6 +414,13 @@ class DetailActivity : AppCompatActivity() {
         if (requestFocus) {
             binding.playButton.requestFocus()
         }
+    }
+
+    private fun bindUpdateInfo(loadedDetail: AnimeDetail) {
+        binding.metaText.text = detailStatusText(loadedDetail.status, loadedDetail.updateLabel)
+        val updateText = animeUpdateText(loadedDetail.lastUpdatedEpochMs)
+        binding.lastUpdateText.text = updateText
+        binding.lastUpdateText.isVisible = updateText != null
     }
 
     private fun refreshBangumiCollectionState(loadedDetail: AnimeDetail) {

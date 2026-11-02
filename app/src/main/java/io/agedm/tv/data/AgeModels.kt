@@ -39,6 +39,13 @@ data class AgeVideo(
     @SerialName("intro_html")
     val introHtml: String = "",
     val status: String = "",
+    @SerialName("uptodate")
+    val updateLabel: String? = null,
+    @SerialName("time")
+    @Serializable(with = FlexibleLongSerializer::class)
+    val updatedAtSeconds: Long = 0,
+    @SerialName("time_format_3")
+    val updatedAtText: String? = null,
     val tags: String = "",
     val playlists: Map<String, List<List<String>>> = emptyMap(),
 )
@@ -76,6 +83,8 @@ data class AnimeDetail(
     val similar: List<AgeRelatedItem>,
     val vipSourceKeys: Set<String>,
     val playerJx: PlayerJx,
+    val updateLabel: String = "",
+    val lastUpdatedEpochMs: Long? = null,
 )
 
 enum class SourceResolver {
@@ -273,6 +282,13 @@ object FlexibleIntSerializer : KSerializer<Int> {
     override fun serialize(encoder: Encoder, value: Int) {
         encoder.encodeInt(value)
     }
+}
+
+object FlexibleLongSerializer : KSerializer<Long> {
+    override val descriptor = PrimitiveSerialDescriptor("FlexibleLong", PrimitiveKind.LONG)
+    override fun deserialize(decoder: Decoder): Long =
+        (decoder as? JsonDecoder)?.decodeJsonElement()?.toString()?.trim('"')?.toLongOrNull() ?: 0L
+    override fun serialize(encoder: Encoder, value: Long) = encoder.encodeLong(value)
 }
 
 data class ResolvedStream(

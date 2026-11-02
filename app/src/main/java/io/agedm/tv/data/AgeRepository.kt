@@ -959,6 +959,8 @@ class AgeRepository(
             cover = video.cover,
             introHtml = video.introHtml,
             status = video.status,
+            updateLabel = video.updateLabel.orEmpty(),
+            lastUpdatedEpochMs = video.lastUpdatedEpochMillis(),
             tags = video.tags,
             bangumi = bangumi,
             sources = sources,
