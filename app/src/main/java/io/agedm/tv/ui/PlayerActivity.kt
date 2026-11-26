@@ -79,8 +79,7 @@ class PlayerActivity : AppCompatActivity() {
     private var episodePanelOpen = false
     private var autoHideAfterReady = true
     // Track last two key-down codes for the skip-intro gesture (RIGHT → UP).
-    private var prevKeyCode = KeyEvent.KEYCODE_UNKNOWN
-    private var prev2KeyCode = KeyEvent.KEYCODE_UNKNOWN
+    private val skipIntroGesture = SkipIntroGesture()
     private var hasPlaybackStarted = false
     private var playingDownloaded = false
     private var playbackRequestId = 0
@@ -118,6 +117,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        skipIntroGesture.clear()
         persistCurrentProgress()
         player.pause()
         super.onPause()
@@ -136,20 +136,12 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val skipIntro = skipIntroGesture.onKey(event, !controlsVisible && !episodePanelOpen)
         if (event.action == KeyEvent.ACTION_DOWN) {
             // Reschedule auto-hide on any interaction while overlay is open (but no episodes).
             if (controlsVisible && !episodePanelOpen && event.keyCode != KeyEvent.KEYCODE_BACK) {
                 scheduleControlsHide()
             }
-
-            // Detect skip-intro gesture: exactly one RIGHT immediately before UP.
-            // Multiple consecutive RIGHTs before UP should NOT trigger it.
-            val skipIntroGesture = event.keyCode == KeyEvent.KEYCODE_DPAD_UP
-                && prevKeyCode == KeyEvent.KEYCODE_DPAD_RIGHT
-                && prev2KeyCode != KeyEvent.KEYCODE_DPAD_RIGHT
-
-            prev2KeyCode = prevKeyCode
-            prevKeyCode = event.keyCode
 
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> {
@@ -179,7 +171,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (skipIntroGesture && !controlsVisible) {
+                    if (skipIntro) {
                         val skipMs = app.playbackStore.getSkipIntroDurationMs()
                         seekBy(skipMs)
                         val sec = skipMs / 1000
@@ -537,6 +529,7 @@ class PlayerActivity : AppCompatActivity() {
         val source = loadedDetail.sources.getOrNull(sourceIndex) ?: return
         val episode = source.episodes.firstOrNull { it.index == episodeIndex } ?: return
 
+        skipIntroGesture.clear()
         playbackErrorDialog?.dismiss()
         playbackRequestId++
         persistCurrentProgress()
@@ -894,6 +887,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun showControls(expandEpisodes: Boolean = false) {
+        skipIntroGesture.clear()
         controlsVisible = true
         fadeIn(binding.overlayScrim)
         fadeIn(binding.topInfoContainer)

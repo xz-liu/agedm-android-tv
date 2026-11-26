@@ -46,6 +46,7 @@ class LocalLibraryTest {
             bundledTitles = { titles }).loadInitialsIndex()
         assertTrue(index.search("HYRZ").any { it.title == "火影忍者" })
         assertTrue(index.search("QHZWD").any { "自卫队" in it.title })
+        assertTrue(index.search("YZNZ").any { it.title == "星际牛仔" })
     }
 
     @Test

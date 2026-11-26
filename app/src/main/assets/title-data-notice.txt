@@ -1,0 +1,5 @@
+Additional title translations from bangumi-data contributors, version 0.3.237
+https://github.com/bangumi-data/bangumi-data
+https://unpkg.com/bangumi-data@0.3.237/dist/data.json
+Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/
+Translations were matched against AGE names and premiere dates, filtered and deduplicated.
