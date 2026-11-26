@@ -59,6 +59,32 @@ class LinkCastSearchTest {
         } finally { server.stop() }
     }
 
+    @Test fun phoneSearchAndMirrorOmitHiddenIds() {
+        val repo = AgeRepository(client = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"data":{"videos":[{"id":12,"name":"保留"},{"id":13,"name":"隐藏"}],"total":2}}"""
+                    .toResponseBody("application/json".toMediaType())).build()
+        }.build())
+        val context = RuntimeEnvironment.getApplication()
+        val account = BangumiAccountService(repo, PlaybackStore(context), BangumiAccountStore(context))
+        var mirror = MirrorState()
+        val server = LinkCastManager.LinkCastHttpServer(0, {}, { mirror = it }, repo, account) { it == 13L }
+        server.start()
+        try {
+            val base = "http://127.0.0.1:${server.listeningPort}"
+            val client = OkHttpClient()
+            client.newCall(Request.Builder().url("$base/api/search?q=test").build()).execute().use {
+                val rows = org.json.JSONArray(it.body!!.string())
+                assertEquals(1, rows.length())
+                assertEquals(12L, rows.getJSONObject(0).getLong("id"))
+            }
+            val oldResults = """{"query":"test","results":[{"id":13,"title":"隐藏"},{"id":12,"title":"保留"}]}"""
+            client.newCall(Request.Builder().url("$base/api/mirror").post(oldResults.toRequestBody(
+                "application/json".toMediaType())).build()).execute().close()
+            assertEquals(listOf(12L), mirror.results.map { it.animeId })
+        } finally { server.stop() }
+    }
+
     @Test fun wrappedCertificateExceptionsHaveReadableMessagesWithoutHidingOtherErrors() {
         val error = IOException("request failed", CertPathValidatorException("Trust anchor not found"))
         assertTrue(networkFailureMessage(error, "fallback").contains("证书"))

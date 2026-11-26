@@ -319,6 +319,10 @@ class DetailActivity : AppCompatActivity() {
 
     private fun loadDetail() {
         val animeId = intent.getLongExtra(EXTRA_ANIME_ID, 0L)
+        if (app.hiddenLibrary.contains(animeId) && !intent.getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
+            finish()
+            return
+        }
         if (animeId <= 0L) {
             showError("无效的动画 ID")
             return
@@ -407,12 +411,12 @@ class DetailActivity : AppCompatActivity() {
             previewSourceKey = loadedDetail.sources.getOrNull(previewSourceIndex)?.key,
         )
 
-        relatedAdapter.submitList(loadedDetail.related.map(::toCard))
-        similarAdapter.submitList(loadedDetail.similar.map(::toCard))
-        binding.relatedTitle.isVisible = loadedDetail.related.isNotEmpty()
-        binding.relatedRecycler.isVisible = loadedDetail.related.isNotEmpty()
-        binding.similarTitle.isVisible = loadedDetail.similar.isNotEmpty()
-        binding.similarRecycler.isVisible = loadedDetail.similar.isNotEmpty()
+        relatedAdapter.submitList(loadedDetail.related.filterNot { app.hiddenLibrary.contains(it.animeId) }.map(::toCard))
+        similarAdapter.submitList(loadedDetail.similar.filterNot { app.hiddenLibrary.contains(it.animeId) }.map(::toCard))
+        binding.relatedTitle.isVisible = relatedAdapter.itemCount > 0
+        binding.relatedRecycler.isVisible = relatedAdapter.itemCount > 0
+        binding.similarTitle.isVisible = similarAdapter.itemCount > 0
+        binding.similarRecycler.isVisible = similarAdapter.itemCount > 0
 
         binding.playButton.text = record?.let { "继续 ${it.episodeLabel}" }
             ?: getString(io.agedm.tv.R.string.btn_play_now)
@@ -449,7 +453,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun refreshBangumiCollectionState(loadedDetail: AnimeDetail) {
-        if (!app.bangumiAccountService.isLoggedIn()) {
+        if (app.hiddenLibrary.contains(loadedDetail.animeId) || !app.bangumiAccountService.isLoggedIn()) {
             bangumiCollectionLoading = false
             renderBangumiCollectionState()
             return
@@ -486,6 +490,10 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun renderBangumiCollectionState() {
+        val visible = detail?.let { !app.hiddenLibrary.contains(it.animeId) } == true
+        binding.bangumiCollectionActions.isVisible = visible
+        binding.bangumiCollectionHintText.isVisible = visible
+        if (!visible) return
         val current = bangumiCollectionStatus
         val account = app.bangumiAccountService.currentAccount()
         renderBangumiStatusButton(binding.bangumiWishButton, BangumiCollectionStatus.WISH, current)
@@ -891,7 +899,7 @@ class DetailActivity : AppCompatActivity() {
                 preferredSourceKey = preferredSourceKey,
                 resumePositionMs = resumePositionMs,
                 preferResumePrompt = preferResumePrompt,
-            ),
+            ).putExtra(EXTRA_FROM_LIBRARY, intent.getBooleanExtra(EXTRA_FROM_LIBRARY, false)),
         )
     }
 
@@ -972,9 +980,9 @@ class DetailActivity : AppCompatActivity() {
         binding.bangumiStaffText.isVisible = metadata.staff.isNotEmpty()
 
         bindBangumiComments(metadata.comments)
-        bangumiSimilarAdapter.submitList(metadata.similar.map(::toCard))
-        binding.bangumiSimilarTitle.isVisible = metadata.similar.isNotEmpty()
-        binding.bangumiSimilarRecycler.isVisible = metadata.similar.isNotEmpty()
+        bangumiSimilarAdapter.submitList(metadata.similar.filterNot { app.hiddenLibrary.contains(it.animeId) }.map(::toCard))
+        binding.bangumiSimilarTitle.isVisible = bangumiSimilarAdapter.itemCount > 0
+        binding.bangumiSimilarRecycler.isVisible = bangumiSimilarAdapter.itemCount > 0
     }
 
     private fun bindBangumiComments(comments: List<BangumiComment>) {
@@ -1097,6 +1105,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     companion object {
+        internal const val EXTRA_FROM_LIBRARY = "from_hidden_library"
         private const val EXTRA_ANIME_ID = "extra_anime_id"
 
         fun createIntent(context: Context, animeId: Long): Intent {

@@ -81,7 +81,7 @@ class DownloadPreparationService : Service() {
 
     private suspend fun prepare(task: QueuedEpisode) {
         try {
-            updateNotification("正在准备 ${task.title} · ${task.episodeLabel}")
+            updateNotification(if (app.hiddenLibrary.contains(task.animeId)) "正在准备下载" else "正在准备 ${task.title} · ${task.episodeLabel}")
             val parser = resolver ?: WebStreamResolver(this, null, scope, app.ageRepository).also { resolver = it }
             val resolved = parser.resolve(task.detail(), task.source(), task.episode())
             // Validate download contents before creating a persistent request, without

@@ -30,6 +30,12 @@ class PosterCardAdapter(
         const val SCORE_PREFETCH_WORKER_COUNT = 2
     }
 
+    var prefetchScores = true
+        set(value) {
+            if (value == field) return
+            field = value
+            if (!value) cancelScorePrefetch()
+        }
     var onLongClick: ((AnimeCard) -> Unit)? = null
     var onSelectionToggle: ((AnimeCard) -> Unit)? = null
     var selectionMode: Boolean = false
@@ -243,6 +249,7 @@ class PosterCardAdapter(
     }
 
     private fun restartScorePrefetch() {
+        if (!prefetchScores) return
         val recyclerView = attachedRecyclerView ?: return
         val lifecycleOwner = recyclerView.context.findLifecycleOwner() ?: return
         val app = recyclerView.context.applicationContext as? AgeTvApplication ?: return

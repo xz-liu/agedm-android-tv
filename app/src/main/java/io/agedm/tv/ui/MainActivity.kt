@@ -56,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private enum class Screen {
         CAST,
         HOME,
+        INITIALS,
         CATALOG,
         RECOMMEND,
         UPDATE,
@@ -87,6 +88,11 @@ class MainActivity : AppCompatActivity() {
         get() = application as AgeTvApplication
 
     private var currentScreen: Screen = Screen.HOME
+    private var libraryRevision = 0L
+    private var initialsQuery = ""
+    private var initialsIndex: io.agedm.tv.data.InitialsIndex? = null
+    private var initialsResults = emptyList<AnimeCard>()
+    private var firstLetterId = View.NO_ID
     private var currentSearchQuery: String? = null
     private var currentPage: Int = 1
     private var currentPageSize: Int = 30
@@ -114,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         get() = linkedMapOf(
             binding.navCastButton to Screen.CAST,
             binding.navHomeButton to Screen.HOME,
+            binding.navInitialsButton to Screen.INITIALS,
             binding.navCatalogButton to Screen.CATALOG,
             binding.navRecommendButton to Screen.RECOMMEND,
             binding.navUpdateButton to Screen.UPDATE,
@@ -130,6 +137,7 @@ class MainActivity : AppCompatActivity() {
 
         setupRecycler()
         downloadsPanel = DownloadsPanel(this, binding.downloadsContent, binding.navDownloadsButton.id)
+        setupInitialsKeyboard()
         setupChrome()
         setupBottomNav()
         setupBackBehavior()
@@ -157,7 +165,13 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateHistoryNavLabel()
-        if (currentScreen == Screen.HISTORY) {
+        if (libraryRevision != app.hiddenLibrary.revision) {
+            libraryRevision = app.hiddenLibrary.revision
+            gridAdapter.submitList(emptyList())
+            sectionAdapter.submitList(emptyList())
+            mirrorAdapter.submitList(emptyList())
+            openScreen(currentScreen)
+        } else if (currentScreen == Screen.HISTORY) {
             loadHistory()
         }
         app.linkCastManager.consumePendingRoute()?.let { route ->
@@ -353,6 +367,8 @@ class MainActivity : AppCompatActivity() {
         clearNavFocusSwitchArm()
         exitSelectionMode(silent = true)
         slideFromRight = screen.navIndex() >= currentScreen.navIndex()
+        gridAdapter.prefetchScores = screen != Screen.INITIALS
+        binding.initialsPanel.isVisible = screen == Screen.INITIALS
         currentScreen = screen
         currentPage = page.coerceAtLeast(1)
         currentPageSize = when (screen) {
@@ -364,6 +380,7 @@ class MainActivity : AppCompatActivity() {
         updateBottomNav()
         when (screen) {
             Screen.CAST -> loadCast()
+            Screen.INITIALS -> loadInitials()
             Screen.HOME -> loadHome()
             Screen.CATALOG -> loadCatalog()
             Screen.RECOMMEND -> loadRecommend()
@@ -591,6 +608,73 @@ class MainActivity : AppCompatActivity() {
         return listOf(BrowseSection("本地继续观看", "电视端播放记录", localHistory))
     }
 
+    private fun setupInitialsKeyboard() {
+        val keys = ('A'..'Z').map { it.toString() } + ('0'..'9').map { it.toString() } + listOf("退格", "清空")
+        for ((rowIndex, keysInRow) in keys.chunked(13).withIndex()) {
+            val row = LinearLayout(this)
+            binding.initialsPanel.addView(row)
+            for (key in keysInRow) {
+                val button = Button(this).apply {
+                    id = View.generateViewId()
+                    text = key
+                    textSize = 15f
+                    setPadding(0, 0, 0, 0)
+                    setTextColor(getColor(R.color.age_text))
+                    setBackgroundResource(R.drawable.bg_focusable_small)
+                    if (rowIndex == 0) nextFocusUpId = binding.navInitialsButton.id
+                    setOnClickListener {
+                        initialsQuery = when (key) {
+                            "退格" -> initialsQuery.dropLast(1)
+                            "清空" -> ""
+                            else -> initialsQuery + key
+                        }
+                        renderInitials()
+                    }
+                }
+                if (key == "A") firstLetterId = button.id
+                row.addView(button, LinearLayout.LayoutParams(0, dpToPx(38), 1f))
+            }
+            row.weightSum = 13f
+        }
+    }
+
+    private fun loadInitials() {
+        val requestId = replaceLoadRequest()
+        applyFilterActions(emptyList(), showReset = false)
+        updatePagination(false)
+        renderInitials()
+        loadJob = lifecycleScope.launch {
+            try {
+                val index = app.ageRepository.loadInitialsIndex()
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                initialsIndex = index
+                renderInitials()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (shouldHandleLoadResult(requestId) && initialsIndex == null) {
+                    showError("暂时无法加载本地片库")
+                }
+            }
+        }
+    }
+
+    private fun renderInitials() {
+        binding.initialsQuery.text = if (initialsQuery.isEmpty()) "首字母搜索" else "首字母搜索  ·  $initialsQuery"
+        val emptyMessage = when {
+            initialsQuery.isEmpty() -> "输入片名首字母，例如 HYRZ 搜索《火影忍者》"
+            initialsIndex == null -> "正在读取本地片库…"
+            else -> "本地片库没有匹配的作品"
+        }
+        initialsResults = visibleCards(initialsIndex?.search(initialsQuery).orEmpty())
+        applyPagedGridResult(initialsPage(1), emptyMessage, animate = false, append = false)
+        if (binding.initialsPanel.hasFocus()) binding.contentRecycler.scrollToPosition(0)
+    }
+
+    private fun initialsPage(page: Int): PagedCards {
+        val size = 36
+        return PagedCards(initialsResults.drop((page - 1) * size).take(size), initialsResults.size, page, size)
+    }
+
     private fun loadSearch() {
         val query = currentSearchQuery?.trim().orEmpty()
         if (query.isBlank()) {
@@ -633,7 +717,7 @@ class MainActivity : AppCompatActivity() {
                     renderLoading(loadingMessage)
                 }
 
-                val fresh = fetch()
+                val fresh = nextVisiblePage(fetch(), requestId)
                 if (!shouldHandleLoadResult(requestId)) return@launch
                 applyPagedGridResult(fresh, emptyMessage = emptyMessage, animate = !showingCached, append = false)
             } catch (error: Throwable) {
@@ -712,21 +796,24 @@ class MainActivity : AppCompatActivity() {
             binding.contentRecycler.layoutManager = LinearLayoutManager(this)
             binding.contentRecycler.adapter = sectionAdapter
         }
-        currentVisibleCards = sections.flatMap { it.items }.distinctBy { it.animeId }
+        val visible = sections.map { section -> section.copy(items = visibleCards(section.items)) }.filter { it.items.isNotEmpty() }
+        currentVisibleCards = visible.flatMap { it.items }.distinctBy { it.animeId }
         configureBrowseSelection(restoreFocus = false)
-        sectionAdapter.submitList(sections)
-        binding.emptyStateText.isVisible = sections.isEmpty()
+        sectionAdapter.submitList(visible)
+        binding.emptyStateText.isVisible = visible.isEmpty()
         binding.emptyStateText.text = emptyMessage
         updateFocusTargets()
         if (animate) animateContentIn(binding.contentRecycler)
     }
+
+    private fun visibleCards(cards: List<AnimeCard>) = cards.filterNot { app.hiddenLibrary.contains(it.animeId) }
 
     private fun showGrid(items: List<AnimeCard>, emptyMessage: String, animate: Boolean = true) {
         prepareBrowseContent()
         binding.loadingLayout.isVisible = false
         binding.contentRecycler.isVisible = true
         ensureGridRecycler()
-        currentVisibleCards = items.distinctBy { it.animeId }
+        currentVisibleCards = visibleCards(items).distinctBy { it.animeId }
         configureBrowseSelection(restoreFocus = false)
         gridAdapter.submitList(currentVisibleCards)
         binding.emptyStateText.isVisible = currentVisibleCards.isEmpty()
@@ -741,7 +828,7 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
         ensureGridRecycler()
         val existingIds = currentVisibleCards.asSequence().map { it.animeId }.toHashSet()
-        val appendedItems = items
+        val appendedItems = visibleCards(items)
             .asSequence()
             .filter { it.animeId !in existingIds }
             .distinctBy { it.animeId }
@@ -1029,6 +1116,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateFocusTargets() {
         val firstFilter = visibleFilterButtons().firstOrNull()
         val contentTarget = when {
+            currentScreen == Screen.INITIALS -> firstLetterId
             currentScreen == Screen.CAST -> binding.castContent.id
             currentScreen == Screen.DOWNLOADS -> binding.downloadsContent.id
             firstFilter != null -> firstFilter.id
@@ -1099,6 +1187,7 @@ class MainActivity : AppCompatActivity() {
     private fun requestBestContentFocus() {
         val firstFilter = visibleFilterButtons().firstOrNull()
         when {
+            currentScreen == Screen.INITIALS -> findViewById<Button>(firstLetterId).requestFocus()
             firstFilter != null && firstFilter.isShown -> firstFilter.requestFocus()
             currentScreen == Screen.CAST && binding.castContent.isVisible -> binding.castContent.requestFocus()
             currentScreen == Screen.DOWNLOADS -> downloadsPanel.requestContentFocus()
@@ -1172,7 +1261,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun supportsInfiniteGridPaging(): Boolean {
-        return currentScreen == Screen.CATALOG ||
+        return currentScreen == Screen.INITIALS || currentScreen == Screen.CATALOG ||
             currentScreen == Screen.UPDATE ||
             currentScreen == Screen.SEARCH
     }
@@ -1199,7 +1288,7 @@ class MainActivity : AppCompatActivity() {
         appendJob?.cancel()
         appendJob = lifecycleScope.launch {
             try {
-                val result = fetchGridPage(nextPage)
+                val result = nextVisiblePage(fetchGridPage(nextPage), requestId)
                 if (!shouldHandleLoadResult(requestId)) return@launch
                 if (result.items.isEmpty()) {
                     currentTotal = currentVisibleCards.size
@@ -1223,8 +1312,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private suspend fun nextVisiblePage(first: PagedCards, requestId: Long): PagedCards {
+        var page = first
+        while (shouldHandleLoadResult(requestId) && page.items.isNotEmpty() &&
+            page.items.all { app.hiddenLibrary.contains(it.animeId) } &&
+            page.size > 0 && page.page.toLong() * page.size < page.total) {
+            page = fetchGridPage(page.page + 1)
+        }
+        return page
+    }
+
     private suspend fun fetchGridPage(page: Int): PagedCards {
         return when (currentScreen) {
+            Screen.INITIALS -> initialsPage(page)
             Screen.CATALOG -> app.ageRepository.fetchCatalog(catalogQuery.copy(page = page, size = 30))
             Screen.UPDATE -> app.ageRepository.fetchUpdate(page = page, size = 30)
             Screen.SEARCH -> app.ageRepository.search(
@@ -1353,9 +1453,10 @@ class MainActivity : AppCompatActivity() {
                 subtitle = "",
             )
         }
-        mirrorAdapter.submitList(cards)
+        val visible = visibleCards(cards)
+        mirrorAdapter.submitList(visible)
 
-        val hasResults = cards.isNotEmpty()
+        val hasResults = visible.isNotEmpty()
         binding.mirrorRecycler.isVisible = hasResults
         binding.mirrorEmptyText.isVisible = !hasResults
         binding.mirrorEmptyText.text = state.error.ifBlank {
@@ -1448,11 +1549,8 @@ class MainActivity : AppCompatActivity() {
         gridAdapter.onLongClick = longClickHandler
         gridAdapter.updateSelectionState(selectionEnabled, selected)
         sectionAdapter.onLongClick = longClickHandler
-        sectionAdapter.updateSelectionState(selectionEnabled, selected)
-        when (binding.contentRecycler.adapter) {
-            gridAdapter -> gridAdapter.refreshSelection(changedAnimeIds)
-            sectionAdapter -> sectionAdapter.updateSelectionState(selectionEnabled, selected, changedAnimeIds)
-        }
+        sectionAdapter.updateSelectionState(selectionEnabled, selected, changedAnimeIds)
+        if (binding.contentRecycler.adapter === gridAdapter) gridAdapter.refreshSelection(changedAnimeIds)
         if (restoreFocus) {
             binding.contentRecycler.post {
                 restorePendingAnimeFocusIfPossible()
@@ -1461,8 +1559,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun canUseBatchSelection(): Boolean {
-        return app.bangumiAccountService.isLoggedIn() &&
-            currentScreen != Screen.CAST &&
+        return currentScreen != Screen.CAST &&
             currentScreen != Screen.DOWNLOADS &&
             currentScreen != Screen.HISTORY
     }
@@ -1523,9 +1620,22 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val focusAnimeId = pendingFocusRestoreAnimeId ?: currentFocusedAnimeId() ?: cards.firstOrNull()?.animeId
+        val actions = if (app.bangumiAccountService.isLoggedIn()) arrayOf("标记看过", "标记抛弃", "标记隐藏") else arrayOf("标记隐藏")
         MaterialAlertDialogBuilder(this)
             .setTitle("批量标记 ${cards.size} 项")
-            .setItems(arrayOf("标记看过", "标记抛弃")) { _, which ->
+            .setItems(actions) { _, which ->
+                if (actions[which] == "标记隐藏") {
+                    app.hiddenLibrary.hide(cards)
+                    libraryRevision = app.hiddenLibrary.revision
+                    exitSelectionMode(silent = true)
+                    pendingFocusRestoreAnimeId = null
+                    currentVisibleCards = visibleCards(currentVisibleCards)
+                    if (binding.contentRecycler.adapter === sectionAdapter) {
+                        sectionAdapter.removeCards(cards.mapTo(mutableSetOf()) { it.animeId })
+                    } else gridAdapter.submitList(currentVisibleCards)
+                    openScreen(currentScreen)
+                    return@setItems
+                }
                 val status = if (which == 0) BangumiCollectionStatus.COLLECT else BangumiCollectionStatus.DROPPED
                 app.bangumiAccountService.enqueueBatchStatusUpdate(cards, status)
                 exitSelectionMode(silent = true, focusAnimeId = focusAnimeId)

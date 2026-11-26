@@ -359,6 +359,10 @@ class AppStorageDatabase private constructor(context: Context) :
         writableDatabase.delete("metadata_entries", "entry_key = ?", arrayOf(key))
     }
 
+    fun readAgeTitleMetadata(): List<String> = readableDatabase.rawQuery(
+        "SELECT value FROM metadata_entries WHERE entry_key GLOB 'age_lookup_*'", null
+    ).use { rows -> buildList { while (rows.moveToNext()) add(rows.getString(0)) } }
+
     fun listMetadataKeys(prefix: String = ""): List<String> {
         val selection = if (prefix.isBlank()) null else "entry_key LIKE ?"
         val args = if (prefix.isBlank()) null else arrayOf("$prefix%")

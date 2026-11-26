@@ -92,7 +92,7 @@ internal class DownloadsPanel(
                     while (true) {
                         try {
                             val now = SystemClock.elapsedRealtime()
-                            entries = store.snapshot().map { entry ->
+                            entries = store.snapshot().filterNot { app.hiddenLibrary.contains(it.animeId) }.map { entry ->
                                 entry.copy(cover = entry.cover.ifBlank { app.ageRepository.buildCoverUrl(entry.animeId) },
                                     bytesPerSecond = speedTracker.sample(entry.id, entry.bytes, entry.status == DownloadStatus.DOWNLOADING, now))
                             }

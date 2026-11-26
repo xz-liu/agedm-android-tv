@@ -35,6 +35,8 @@ class AgeRepository(
         ignoreUnknownKeys = true
         explicitNulls = false
     },
+    private val isHidden: (Long) -> Boolean = { false },
+    private val bundledTitles: () -> List<AgeBangumiLookupMetadata> = { emptyList() },
 ) {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bangumiPrefetchJobs = ConcurrentHashMap<Long, Job>()
@@ -55,6 +57,7 @@ class AgeRepository(
                 json = json,
                 alignToAge = ::alignBangumiSubjectToAge,
                 ensureAgeMetadata = ::ensureAgeLookupMetadata,
+                isHidden = isHidden,
             )
         }
     }
@@ -101,6 +104,19 @@ class AgeRepository(
     suspend fun fetchAiringWeekdays(animeId: Long, forceRefresh: Boolean = false): List<Int> = withContext(Dispatchers.IO) {
         val body = cachedGet(homeCacheKey(), TTL_HOME_MS, apiUrl("home-list"), forceRefresh = forceRefresh)
         json.decodeFromString<AgeHomeResponse>(body).airingWeekdays(animeId)
+    }
+
+    suspend fun loadInitialsIndex(): InitialsIndex = withContext(Dispatchers.Default) {
+        val titles = withContext(Dispatchers.IO) {
+            val byId = bundledTitles().associateByTo(mutableMapOf()) { it.animeId }
+            for (row in persistentStore?.readAgeTitleMetadata().orEmpty()) {
+                val cached = runCatching { json.decodeFromString<AgeBangumiLookupMetadata>(row) }.getOrNull() ?: continue
+                val seed = byId[cached.animeId]
+                byId[cached.animeId] = seed.mergeWith(cached)
+            }
+            byId.values.toList()
+        }
+        InitialsIndex(titles, ::buildCoverUrl)
     }
 
     suspend fun fetchRecommend(page: Int = 1, size: Int = 100): PagedCards = withContext(Dispatchers.IO) {

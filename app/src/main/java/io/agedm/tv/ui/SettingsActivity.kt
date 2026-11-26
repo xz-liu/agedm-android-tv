@@ -51,6 +51,15 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun setupButtons() {
+        binding.versionButton.text = "版本  " + packageManager.getPackageInfo(packageName, 0).versionName
+        var presses = 0
+        binding.versionButton.setOnFocusChangeListener { _, focused -> if (!focused) presses = 0 }
+        binding.versionButton.setOnClickListener {
+            if (++presses == 3) {
+                presses = 0
+                startActivity(Intent(this, HiddenLibraryActivity::class.java))
+            }
+        }
         binding.backButton.setOnClickListener { finish() }
         binding.speedSettingButton.setOnClickListener { openSpeedSelector() }
         binding.autoNextSettingButton.setOnClickListener { toggleAutoNext() }

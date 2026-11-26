@@ -26,6 +26,7 @@ class BangumiAccountService(
     private val playbackStore: PlaybackStore,
     private val store: BangumiAccountStore,
     private val client: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build(),
+    private val isHidden: (Long) -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _account = MutableStateFlow(store.readSession())
@@ -71,6 +72,7 @@ class BangumiAccountService(
     fun currentAccount(): BangumiAccountSession? = _account.value
 
     fun cachedCollectionStatus(animeId: Long): BangumiCollectionStatus? {
+        if (isHidden(animeId)) return null
         return BangumiCollectionStatus.fromWireName(store.getCollectionStatus(animeId)?.status)
     }
 
@@ -449,13 +451,14 @@ class BangumiAccountService(
     }
 
     private suspend fun processQueuedWrite(task: QueuedStatusWrite) {
-        if (!isLoggedIn()) return
+        if (!isLoggedIn() || isHidden(task.animeId)) return
         val current = resolveCurrentStatus(task)
         if (!shouldWrite(current, task)) return
         updateCollectionStatus(task.animeId, task.title, task.status)
     }
 
     private fun enqueueWrite(task: QueuedStatusWrite) {
+        if (isHidden(task.animeId)) return
         val changed = synchronized(queueLock) {
             when (task.source) {
                 WriteSource.USER_ACTION -> {
@@ -561,6 +564,7 @@ class BangumiAccountService(
         fields["interest"] = status.interestValue
         fields["referer"] = "ajax"
         fields["update"] = "保存"
+        if (isHidden(animeId)) return
         executeAuthenticatedTextRequest(
             url = form.actionUrl,
             cookies = requireSessionCookies(),

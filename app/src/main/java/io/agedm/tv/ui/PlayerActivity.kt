@@ -434,6 +434,10 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun loadDetail() {
         val animeId = intent.getLongExtra(EXTRA_ANIME_ID, 0L)
+        if (app.hiddenLibrary.contains(animeId) && !intent.getBooleanExtra(DetailActivity.EXTRA_FROM_LIBRARY, false)) {
+            finish()
+            return
+        }
         if (animeId <= 0L) {
             binding.loadingText.text = "缺少动画 ID"
             return
@@ -490,19 +494,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun showResumePrompt(record: PlaybackRecord) {
-        MaterialAlertDialogBuilder(this)
-            .setTitle("继续播放")
-            .setMessage("继续 ${record.episodeLabel} · ${formatPlaybackTime(record.positionMs)}？")
-            .setPositiveButton("继续") { _, _ ->
-                val selection = resolveSelection(record, useRecord = true)
-                beginPlayback(selection.first, selection.second, record.positionMs)
-            }
-            .setNegativeButton("从当前打开的集数开始") { _, _ ->
-                val selection = resolveSelection(record, useRecord = false)
-                beginPlayback(selection.first, selection.second, 0L)
-            }
-            .setCancelable(false)
-            .show()
+        showResumeDialog(this, record.episodeLabel, formatPlaybackTime(record.positionMs)) { resume ->
+            val selection = resolveSelection(record, useRecord = resume)
+            beginPlayback(selection.first, selection.second, if (resume) record.positionMs else 0L)
+        }
     }
 
     private fun resolveSelection(record: PlaybackRecord?, useRecord: Boolean): Pair<Int, Int> {
@@ -1118,7 +1113,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun navigateBackToDetail() {
-        if (intent.getBooleanExtra(EXTRA_RETURN_TO_DOWNLOADS, false)) { finish(); return }
+        if (intent.getBooleanExtra(EXTRA_RETURN_TO_DOWNLOADS, false) || intent.getBooleanExtra(DetailActivity.EXTRA_FROM_LIBRARY, false)) { finish(); return }
         val animeId = detail?.animeId ?: intent.getLongExtra(EXTRA_ANIME_ID, 0L)
         if (animeId > 0L) {
             startActivity(

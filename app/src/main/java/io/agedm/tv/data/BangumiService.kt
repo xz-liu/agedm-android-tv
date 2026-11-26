@@ -26,6 +26,7 @@ internal class BangumiService(
     private val json: Json,
     private val alignToAge: suspend (titles: List<String>, excludeAnimeId: Long) -> AgeRelatedItem?,
     private val ensureAgeMetadata: suspend (animeId: Long) -> AgeBangumiLookupMetadata?,
+    private val isHidden: (Long) -> Boolean = { false },
 ) {
 
     private val subjectSnapshotCache = ConcurrentHashMap<Long, BangumiSubjectSnapshot>()
@@ -148,6 +149,7 @@ internal class BangumiService(
         return store.listKeys(matchCacheKeyPrefix())
             .mapNotNull { key ->
                 val animeId = key.removePrefix(matchCacheKeyPrefix()).toLongOrNull() ?: return@mapNotNull null
+                if (isHidden(animeId)) return@mapNotNull null
                 val match = readResolvedMatchCache(animeId)?.toResolvedMatch() ?: return@mapNotNull null
                 val ageMetadata = ensureAgeMetadata(animeId) ?: return@mapNotNull null
                 val diagnosis = diagnoseStoredMatch(animeId, ageMetadata, match) ?: return@mapNotNull null
@@ -219,7 +221,7 @@ internal class BangumiService(
     suspend fun rebuildSubjectIndexAndRematchAll(
         onProgress: suspend (BangumiRematchProgress) -> Unit = {},
     ): BangumiRematchSummary {
-        val ageEntries = loadAllAgeLookupMetadata()
+        val ageEntries = loadAllAgeLookupMetadata().filterNot { isHidden(it.animeId) }
         if (ageEntries.isEmpty()) {
             onProgress(
                 BangumiRematchProgress(

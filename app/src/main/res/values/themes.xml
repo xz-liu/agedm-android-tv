@@ -27,5 +27,10 @@
         <item name="colorSurface">@color/age_surface</item>
         <item name="colorOnSurface">@color/age_text</item>
     </style>
+    <style name="ThemeOverlay.AgeTv.Resume" parent="ThemeOverlay.AgeTv.Dialog">
+        <item name="android:textColorPrimary">@color/age_text</item>
+        <item name="android:textColorSecondary">@color/age_text</item>
+        <item name="colorPrimary">@color/age_focus</item>
+    </style>
 </resources>
 

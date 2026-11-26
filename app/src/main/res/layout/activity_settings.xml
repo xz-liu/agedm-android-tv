@@ -490,6 +490,7 @@
                 android:focusable="true"
                 android:gravity="center_vertical"
                 android:nextFocusUp="@id/clearCacheSettingButton"
+                android:nextFocusDown="@id/versionButton"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
                 android:paddingEnd="18dp">
@@ -510,6 +511,16 @@
                     android:textSize="15sp" />
             </LinearLayout>
 
+            <Button
+                android:id="@+id/versionButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:background="@drawable/bg_focusable_small"
+                android:gravity="center_vertical"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp"
+                android:textColor="@color/age_text"
+                android:nextFocusUp="@id/clearHistorySettingButton" />
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

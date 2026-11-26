@@ -232,6 +232,7 @@ data class BrowseSection(
     val items: List<AnimeCard>,
 )
 
+@Serializable
 data class AnimeCard(
     val animeId: Long,
     val title: String,

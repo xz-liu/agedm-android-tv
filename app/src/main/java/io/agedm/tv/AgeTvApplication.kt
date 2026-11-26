@@ -32,6 +32,8 @@ class AgeTvApplication : Application() {
 
     val offlineDownloads: io.agedm.tv.data.OfflineDownloads by lazy { io.agedm.tv.data.OfflineDownloads(this) }
 
+    val hiddenLibrary by lazy { io.agedm.tv.data.HiddenLibrary(this) }
+
     val playbackStore: PlaybackStore by lazy { PlaybackStore(this) }
 
     val bangumiAccountStore: BangumiAccountStore by lazy { BangumiAccountStore(this) }
@@ -52,10 +54,18 @@ class AgeTvApplication : Application() {
         )
     }
 
+    private val bundledTitles by lazy {
+        resources.openRawResource(R.raw.age_title_index).bufferedReader().use {
+            kotlinx.serialization.json.Json.decodeFromString<List<io.agedm.tv.data.AgeBangumiLookupMetadata>>(it.readText())
+        }
+    }
+
     val ageRepository: AgeRepository by lazy {
         AgeRepository(
             cache = contentCache,
             persistentStore = metadataStore,
+            bundledTitles = { bundledTitles },
+            isHidden = hiddenLibrary::contains,
         )
     }
 
@@ -64,8 +74,9 @@ class AgeTvApplication : Application() {
             repository = ageRepository,
             playbackStore = playbackStore,
             store = bangumiAccountStore,
+            isHidden = hiddenLibrary::contains,
         )
     }
 
-    val linkCastManager: LinkCastManager by lazy { LinkCastManager(ageRepository, bangumiAccountService) }
+    val linkCastManager: LinkCastManager by lazy { LinkCastManager(ageRepository, bangumiAccountService, hiddenLibrary::contains) }
 }

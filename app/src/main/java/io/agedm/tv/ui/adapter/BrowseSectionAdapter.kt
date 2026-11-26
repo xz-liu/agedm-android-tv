@@ -39,15 +39,23 @@ class BrowseSectionAdapter(
         diff.dispatchUpdatesTo(this)
     }
 
+    fun removeCards(ids: Set<Long>) {
+        submitList(items.map { row -> row.copy(items = row.items.filterNot { it.animeId in ids }) }
+            .filter { it.items.isNotEmpty() })
+    }
+
     fun updateSelectionState(
         selectionMode: Boolean,
         selectedIds: Set<Long>,
         changedAnimeIds: Collection<Long> = emptyList(),
     ) {
+        val modeChanged = this.selectionMode != selectionMode
         this.selectionMode = selectionMode
         this.selectedIds = selectedIds
         lastSelectionChangedAnimeIds = changedAnimeIds.toSet()
-        if (changedAnimeIds.isNotEmpty()) {
+        if (modeChanged) {
+            notifyItemRangeChanged(0, items.size, PAYLOAD_SELECTION)
+        } else if (changedAnimeIds.isNotEmpty()) {
             notifySectionsChanged(changedAnimeIds)
         }
     }

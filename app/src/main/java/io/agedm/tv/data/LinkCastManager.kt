@@ -31,6 +31,7 @@ data class MirrorItem(
 class LinkCastManager(
     private val repository: AgeRepository,
     private val bangumiAccountService: BangumiAccountService,
+    private val isHidden: (Long) -> Boolean = { false },
 ) {
     private var server: LinkCastHttpServer? = null
     private var serverUrl: String? = null
@@ -67,6 +68,7 @@ class LinkCastManager(
                     onMirrorUpdate = ::handleMirrorUpdate,
                     repository = repository,
                     bangumiAccountService = bangumiAccountService,
+                    isHidden = isHidden,
                 )
                 candidate.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 server = candidate
@@ -83,6 +85,8 @@ class LinkCastManager(
     }
 
     private fun handleIncomingRoute(route: AgeRoute) {
+        if ((route is AgeRoute.Detail && isHidden(route.animeId)) ||
+            (route is AgeRoute.Play && isHidden(route.animeId))) return
         _status.value = "已收到：${AgeLinks.describe(route)}"
         _pendingRoute.value = route
         _incomingRoutes.tryEmit(route)
@@ -111,6 +115,7 @@ class LinkCastManager(
         private val onMirrorUpdate: (MirrorState) -> Unit,
         private val repository: AgeRepository,
         private val bangumiAccountService: BangumiAccountService,
+        private val isHidden: (Long) -> Boolean = { false },
     ) : NanoHTTPD(port) {
 
         override fun serve(session: IHTTPSession): Response {
@@ -227,7 +232,7 @@ class LinkCastManager(
                 val results = runBlocking { repository.search(q, 1, 20) }
                 val array = buildString {
                     append('[')
-                    results.items.forEachIndexed { i, card ->
+                    results.items.filterNot { isHidden(it.animeId) }.forEachIndexed { i, card ->
                         if (i > 0) append(',')
                         append("{\"id\":")
                         append(card.animeId)
@@ -281,7 +286,7 @@ class LinkCastManager(
                         ))
                     }
                 }
-                onMirrorUpdate(MirrorState(query, items, obj.optString("error", "")))
+                onMirrorUpdate(MirrorState(query, items.filterNot { isHidden(it.animeId) }, obj.optString("error", "")))
                 json("{\"ok\":true}")
             } catch (_: Throwable) {
                 json("{\"ok\":true}")

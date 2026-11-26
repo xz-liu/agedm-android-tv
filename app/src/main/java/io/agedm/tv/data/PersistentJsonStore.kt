@@ -34,6 +34,12 @@ class PersistentJsonStore(
         return database.listMetadataKeys(prefix)
     }
 
+    @Synchronized
+    fun readAgeTitleMetadata(): List<String> {
+        migrateAllLegacyEntries()
+        return database.readAgeTitleMetadata()
+    }
+
     private fun migrateLegacyEntry(key: String): String? {
         val file = fileFor(key)
         if (file == null || !file.exists()) return null
