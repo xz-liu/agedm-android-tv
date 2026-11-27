@@ -51,6 +51,17 @@ class ContentCache(
     }
 
     @Synchronized
+    fun touchAll(keys: List<String>) {
+        val uniqueKeys = keys.distinct()
+        database.touchKvEntries(uniqueKeys)
+        if (legacyDir?.isDirectory == true) {
+            for (key in uniqueKeys) {
+                if (fileFor(key)?.isFile == true) touch(key)
+            }
+        }
+    }
+
+    @Synchronized
     fun clearAll() {
         database.clearKvEntries()
         try {

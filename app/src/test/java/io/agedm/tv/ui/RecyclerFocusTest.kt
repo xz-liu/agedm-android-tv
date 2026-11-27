@@ -136,6 +136,26 @@ class RecyclerFocusTest {
         assertSame(nav, (recycler.parent as View).findFocus())
     }
 
+    @Test fun switchingBetweenSectionAndGridReusesCompatibleViewsAndKeepsNavFocus() = withRecycler { activity, recycler, nav, layout ->
+        val sections = BrowseSectionAdapter({})
+        val grid = PosterCardAdapter({})
+        sections.submitList(listOf(BrowseSection("周日追番", "", cards())))
+        grid.submitList(cards())
+        recycler.adapter = sections
+        layout()
+        val firstSection = recycler.findViewHolderForAdapterPosition(0)!!
+        assertTrue(nav.requestFocus())
+        recycler.layoutManager = GridLayoutManager(activity, 4)
+        recycler.swapAdapter(grid, true)
+        layout()
+        assertTrue(recycler.findViewHolderForAdapterPosition(0) is PosterCardAdapter.PosterViewHolder)
+        recycler.layoutManager = LinearLayoutManager(activity)
+        recycler.swapAdapter(sections, true)
+        layout()
+        assertSame(firstSection, recycler.findViewHolderForAdapterPosition(0))
+        assertSame(nav, (recycler.parent as View).findFocus())
+    }
+
     @Test fun sectionCountUpdateKeepsFocusedPosterInSameSection() = withRecycler { _, recycler, _, layout ->
         val adapter = BrowseSectionAdapter({})
         recycler.adapter = adapter

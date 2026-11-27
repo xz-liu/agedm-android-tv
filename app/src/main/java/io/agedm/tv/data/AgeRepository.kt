@@ -1,9 +1,11 @@
 package io.agedm.tv.data
 
+import android.util.LruCache
 import java.io.IOException
 import java.security.MessageDigest
 import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -13,7 +15,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -25,6 +29,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
+
+data class CachedPage<T>(val value: T, val isFresh: Boolean)
 
 @OptIn(ExperimentalSerializationApi::class)
 class AgeRepository(
@@ -39,6 +45,11 @@ class AgeRepository(
     private val bundledTitles: () -> List<AgeBangumiLookupMetadata> = { emptyList() },
 ) {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val titleRevision = AtomicLong()
+    private val initialsMutex = Mutex()
+    private var indexedRevision = -1L
+    private var initialsIndex: InitialsIndex? = null
+    private val recentLookupMetadata by lazy { LruCache<Long, AgeBangumiLookupMetadata>(512) }
     private val bangumiPrefetchJobs = ConcurrentHashMap<Long, Job>()
     private val bangumiScoreRequests = ConcurrentHashMap<Long, Deferred<String?>>()
     private val bangumiScoreRequestGate = Semaphore(BANGUMI_SCORE_PARALLELISM)
@@ -107,16 +118,20 @@ class AgeRepository(
     }
 
     suspend fun loadInitialsIndex(): InitialsIndex = withContext(Dispatchers.Default) {
-        val titles = withContext(Dispatchers.IO) {
-            val byId = bundledTitles().associateByTo(mutableMapOf()) { it.animeId }
-            for (row in persistentStore?.readAgeTitleMetadata().orEmpty()) {
+        initialsMutex.withLock {
+            val revision = titleRevision.get()
+            initialsIndex?.takeIf { indexedRevision == revision }?.let { return@withLock it }
+            val rows = withContext(Dispatchers.IO) { persistentStore?.readAgeTitleMetadata().orEmpty() }
+            val titles = bundledTitles().associateByTo(mutableMapOf()) { it.animeId }
+            for (row in rows) {
                 val cached = runCatching { json.decodeFromString<AgeBangumiLookupMetadata>(row) }.getOrNull() ?: continue
-                val seed = byId[cached.animeId]
-                byId[cached.animeId] = seed.mergeWith(cached)
+                titles[cached.animeId] = titles[cached.animeId].mergeWith(cached)
             }
-            byId.values.toList()
+            InitialsIndex(titles.values.toList(), ::buildCoverUrl).also {
+                initialsIndex = it
+                indexedRevision = revision
+            }
         }
-        InitialsIndex(titles, ::buildCoverUrl)
     }
 
     suspend fun fetchRecommend(page: Int = 1, size: Int = 100): PagedCards = withContext(Dispatchers.IO) {
@@ -228,7 +243,6 @@ class AgeRepository(
         forceRefresh: Boolean = false,
     ) {
         if (title.isBlank()) return
-        rememberBangumiLookupTitle(animeId, title)
         if (forceRefresh) {
             bangumiPrefetchJobs.remove(animeId)?.cancel()
         } else {
@@ -236,6 +250,7 @@ class AgeRepository(
         }
         val job = repositoryScope.launch {
             val metadata = runCatching {
+                rememberBangumiLookupTitle(animeId, title)
                 bangumiService?.fetch(animeId, title, forceRefresh)
             }.getOrNull()
             _bangumiMetadataUpdates.tryEmit(animeId to metadata)
@@ -348,36 +363,36 @@ class AgeRepository(
         alignBangumiSubjectToAge(titles, excludeAnimeId)
     }
 
-    suspend fun peekHomeFeed(): HomeFeed? = withContext(Dispatchers.IO) {
-        peekCached(homeCacheKey(), ::decodeHomeFeed)
+    suspend fun peekHomeFeed(): CachedPage<HomeFeed>? = withContext(Dispatchers.IO) {
+        peekPage(homeCacheKey(), TTL_HOME_MS, ::decodeHomeFeed)
     }
 
-    suspend fun peekRecommend(page: Int = 1, size: Int = 100): PagedCards? = withContext(Dispatchers.IO) {
-        peekCached(recommendCacheKey()) { body ->
+    suspend fun peekRecommend(page: Int = 1, size: Int = 100): CachedPage<PagedCards>? = withContext(Dispatchers.IO) {
+        peekPage(recommendCacheKey(), TTL_LIST_MS) { body ->
             decodeRecommend(body, page, size)
         }
     }
 
-    suspend fun peekUpdate(page: Int, size: Int = 30): PagedCards? = withContext(Dispatchers.IO) {
-        peekCached(updateCacheKey(page)) { body ->
+    suspend fun peekUpdate(page: Int, size: Int = 30): CachedPage<PagedCards>? = withContext(Dispatchers.IO) {
+        peekPage(updateCacheKey(page), TTL_LIST_MS) { body ->
             decodeUpdate(body, page, size)
         }
     }
 
-    suspend fun peekCatalog(query: CatalogQuery): PagedCards? = withContext(Dispatchers.IO) {
-        peekCached(catalogCacheKey(query)) { body ->
+    suspend fun peekCatalog(query: CatalogQuery): CachedPage<PagedCards>? = withContext(Dispatchers.IO) {
+        peekPage(catalogCacheKey(query), TTL_LIST_MS) { body ->
             decodeCatalog(body, query)
         }
     }
 
-    suspend fun peekSearch(query: String, page: Int, size: Int = 24): PagedCards? = withContext(Dispatchers.IO) {
-        peekCached(searchCacheKey(query, page)) { body ->
+    suspend fun peekSearch(query: String, page: Int, size: Int = 24): CachedPage<PagedCards>? = withContext(Dispatchers.IO) {
+        peekPage(searchCacheKey(query, page), TTL_SEARCH_MS) { body ->
             decodeSearch(body, page, size)
         }
     }
 
-    suspend fun peekRankSections(year: String = "all"): List<BrowseSection>? = withContext(Dispatchers.IO) {
-        peekCached(rankCacheKey(year)) { body ->
+    suspend fun peekRankSections(year: String = "all"): CachedPage<List<BrowseSection>>? = withContext(Dispatchers.IO) {
+        peekPage(rankCacheKey(year), TTL_LIST_MS) { body ->
             decodeRankSections(body, year)
         }
     }
@@ -477,7 +492,7 @@ class AgeRepository(
     }
 
     private fun touchDetailCaches(ids: List<Long>) {
-        ids.forEach { id -> cache?.touch("detail_$id") }
+        cache?.touchAll(ids.map { "detail_$it" })
     }
 
     private fun decodeHomeFeed(body: String): HomeFeed {
@@ -614,13 +629,23 @@ class AgeRepository(
         return runCatching { json.decodeFromString<AgeBangumiLookupMetadata>(body) }.getOrNull()
     }
 
+    @Synchronized
     private fun cacheAgeLookupMetadata(item: AgeBangumiLookupMetadata?) {
         val snapshot = item ?: return
         if (snapshot.animeId <= 0L) return
         val store = persistentStore ?: return
-        val existing = readAgeLookupMetadata(snapshot.animeId)
+        val existing = recentLookupMetadata.get(snapshot.animeId) ?: readAgeLookupMetadata(snapshot.animeId)
         val merged = existing.mergeWith(snapshot)
+        if (existing != null && existing == merged.copy(updatedAtMs = existing.updatedAtMs)) {
+            recentLookupMetadata.put(snapshot.animeId, existing)
+            return
+        }
         store.write(ageLookupCacheKey(snapshot.animeId), json.encodeToString(merged))
+        recentLookupMetadata.put(snapshot.animeId, merged)
+        if (existing == null || existing.title != merged.title || existing.originalTitle != merged.originalTitle ||
+            existing.otherTitles != merged.otherTitles) {
+            titleRevision.incrementAndGet()
+        }
     }
 
     private fun AgeBangumiLookupMetadata?.mergeWith(
@@ -644,6 +669,12 @@ class AgeRepository(
     }
 
     private fun ageLookupCacheKey(animeId: Long): String = "age_lookup_$animeId"
+
+    private fun <T> peekPage(key: String, ttlMs: Long, decode: (String) -> T): CachedPage<T>? {
+        val fresh = cache?.get(key, ttlMs)
+        if (fresh != null) return runCatching { CachedPage(decode(fresh), isFresh = true) }.getOrNull()
+        return peekCached(key, decode)?.let { CachedPage(it, isFresh = false) }
+    }
 
     private fun <T> peekCached(key: String, decode: (String) -> T): T? {
         val contentCache = cache ?: return null

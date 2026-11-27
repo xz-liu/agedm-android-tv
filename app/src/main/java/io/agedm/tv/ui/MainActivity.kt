@@ -34,6 +34,7 @@ import io.agedm.tv.data.AgeRoute
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.BangumiCollectionStatus
 import io.agedm.tv.data.BrowseSection
+import io.agedm.tv.data.CachedPage
 import io.agedm.tv.data.CatalogQuery
 import io.agedm.tv.data.MirrorState
 import io.agedm.tv.data.PagedCards
@@ -43,12 +44,15 @@ import io.agedm.tv.ui.adapter.BrowseSectionAdapter
 import io.agedm.tv.ui.adapter.PosterCardAdapter
 import java.util.Calendar
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : AppCompatActivity() {
@@ -82,7 +86,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sectionAdapter: BrowseSectionAdapter
     private lateinit var gridAdapter: PosterCardAdapter
     private lateinit var mirrorAdapter: PosterCardAdapter
-    private lateinit var downloadsPanel: DownloadsPanel
+    private val downloadsPanel by lazy { DownloadsPanel(this, binding.downloadsContent, binding.navDownloadsButton.id) }
+    private val activeDownloadsPanel = MutableStateFlow<DownloadsPanel?>(null)
 
     private val app: AgeTvApplication
         get() = application as AgeTvApplication
@@ -91,6 +96,7 @@ class MainActivity : AppCompatActivity() {
     private var libraryRevision = 0L
     private var initialsQuery = ""
     private var initialsIndex: io.agedm.tv.data.InitialsIndex? = null
+    private var initialsSearchJob: Job? = null
     private var initialsResults = emptyList<AnimeCard>()
     private var firstLetterId = View.NO_ID
     private var currentSearchQuery: String? = null
@@ -116,8 +122,8 @@ class MainActivity : AppCompatActivity() {
     private var isAppendingGridPage = false
     private val selectedAnimeIds = linkedSetOf<Long>()
     // Every navigation item gets the same focus, click, indicator and wrap behavior.
-    private val navigationTabs: Map<Button, Screen>
-        get() = linkedMapOf(
+    private val navigationTabs by lazy {
+        linkedMapOf(
             binding.navCastButton to Screen.CAST,
             binding.navHomeButton to Screen.HOME,
             binding.navInitialsButton to Screen.INITIALS,
@@ -128,7 +134,8 @@ class MainActivity : AppCompatActivity() {
             binding.navHistoryButton to Screen.HISTORY,
             binding.navDownloadsButton to Screen.DOWNLOADS,
         )
-    private val navButtons: List<Button> get() = navigationTabs.keys.toList()
+    }
+    private val navButtons by lazy { navigationTabs.keys.toList() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -136,12 +143,15 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         setupRecycler()
-        downloadsPanel = DownloadsPanel(this, binding.downloadsContent, binding.navDownloadsButton.id)
-        setupInitialsKeyboard()
         setupChrome()
         setupBottomNav()
         setupBackBehavior()
         collectIncomingRoutes()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                activeDownloadsPanel.collectLatest { it?.refreshWhileVisible() }
+            }
+        }
 
         if (!handleIntent(intent)) {
             openScreen(Screen.HOME)
@@ -362,7 +372,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openScreen(screen: Screen, page: Int = 1) {
         focusNavJob?.cancel()
-        downloadsPanel.stop()
+        activeDownloadsPanel.value = null
         binding.downloadsContent.isVisible = false
         clearNavFocusSwitchArm()
         exitSelectionMode(silent = true)
@@ -404,6 +414,7 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = false
         binding.downloadsContent.isVisible = true
         downloadsPanel.start()
+        activeDownloadsPanel.value = downloadsPanel
         updateFocusTargets()
         animateContentIn(binding.downloadsContent)
     }
@@ -518,40 +529,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHistory() {
-        loadLocalHistory()
-    }
-
-    private fun loadLocalHistory() {
-        gridAdapter.onLongClick = { card ->
-            MaterialAlertDialogBuilder(this)
-                .setTitle("删除记录")
-                .setMessage("删除「${card.title}」的观看记录？")
-                .setPositiveButton("删除") { _, _ ->
-                    app.playbackStore.deleteRecord(card.animeId)
-                    loadHistory()
-                }
-                .setNegativeButton("取消", null)
-                .show()
-        }
         renderLoading("正在读取观看记录...")
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(visible = false)
-        replaceLoadRequest()
-        val history = app.playbackStore.getRecentRecords(60).map(::recordToCard)
-        currentTotal = history.size
-        currentPageSize = history.size.coerceAtLeast(1)
-        showGrid(history, emptyMessage = "还没有播放记录")
-        gridAdapter.onLongClick = { card ->
-            MaterialAlertDialogBuilder(this)
-                .setTitle("删除记录")
-                .setMessage("删除「${card.title}」的观看记录？")
-                .setPositiveButton("删除") { _, _ ->
-                    app.playbackStore.deleteRecord(card.animeId)
-                    loadHistory()
-                }
-                .setNegativeButton("取消", null)
-                .show()
+        val requestId = replaceLoadRequest()
+        loadJob = lifecycleScope.launch {
+            try {
+                val history = withContext(Dispatchers.IO) { app.playbackStore.getRecentRecords(60).map(::recordToCard) }
+                if (!shouldHandleLoadResult(requestId)) return@launch
+                currentTotal = history.size
+                currentPageSize = history.size.coerceAtLeast(1)
+                showGrid(history, emptyMessage = "还没有播放记录")
+                gridAdapter.onLongClick = ::confirmDeleteHistory
+            } catch (error: Exception) {
+                handleLoadFailure(requestId, "观看记录加载失败", error)
+            }
         }
+    }
+
+    private fun confirmDeleteHistory(card: AnimeCard) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("删除记录")
+            .setMessage("删除「${card.title}」的观看记录？")
+            .setPositiveButton("删除") { _, _ ->
+                app.playbackStore.deleteRecord(card.animeId)
+                loadHistory()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun loadMyPage() {
@@ -640,6 +645,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadInitials() {
         val requestId = replaceLoadRequest()
+        if (firstLetterId == View.NO_ID) setupInitialsKeyboard()
+        initialsIndex = null
         applyFilterActions(emptyList(), showReset = false)
         updatePagination(false)
         renderInitials()
@@ -648,7 +655,7 @@ class MainActivity : AppCompatActivity() {
                 val index = app.ageRepository.loadInitialsIndex()
                 if (!shouldHandleLoadResult(requestId)) return@launch
                 initialsIndex = index
-                renderInitials()
+                if (initialsQuery.isNotEmpty()) renderInitials()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (shouldHandleLoadResult(requestId) && initialsIndex == null) {
@@ -659,14 +666,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderInitials() {
-        binding.initialsQuery.text = if (initialsQuery.isEmpty()) "首字母搜索" else "首字母搜索  ·  $initialsQuery"
-        val emptyMessage = when {
-            initialsQuery.isEmpty() -> "输入片名首字母，例如 HYRZ 搜索《火影忍者》"
-            initialsIndex == null -> "正在读取本地片库…"
-            else -> "本地片库没有匹配的作品"
+        initialsSearchJob?.cancel()
+        appendJob?.cancel()
+        currentTotal = 0
+        val query = initialsQuery
+        binding.initialsQuery.text = if (query.isEmpty()) "首字母搜索" else "首字母搜索  ·  $query"
+        val index = initialsIndex
+        if (query.isEmpty() || index == null) {
+            val message = if (query.isEmpty()) "输入片名首字母，例如 HYRZ 搜索《火影忍者》" else "正在读取本地片库…"
+            showInitialsResults(emptyList(), message)
+            return
         }
-        initialsResults = visibleCards(initialsIndex?.search(initialsQuery).orEmpty())
-        applyPagedGridResult(initialsPage(1), emptyMessage, animate = false, append = false)
+        initialsSearchJob = lifecycleScope.launch {
+            val matches = withContext(Dispatchers.Default) { visibleCards(index.search(query)) }
+            showInitialsResults(matches, "本地片库没有匹配的作品")
+        }
+    }
+
+    private fun showInitialsResults(matches: List<AnimeCard>, message: String) {
+        initialsResults = matches
+        applyPagedGridResult(initialsPage(1), message, animate = false, append = false)
         if (binding.initialsPanel.hasFocus()) binding.contentRecycler.scrollToPosition(0)
     }
 
@@ -695,7 +714,7 @@ class MainActivity : AppCompatActivity() {
         loadingMessage: String,
         errorPrefix: String,
         emptyMessage: String,
-        peek: suspend () -> PagedCards?,
+        peek: suspend () -> CachedPage<PagedCards>?,
         fetch: suspend () -> PagedCards,
     ) {
         updatePagination(visible = false)
@@ -709,7 +728,10 @@ class MainActivity : AppCompatActivity() {
                 val cached = peek()
                 if (!shouldHandleLoadResult(requestId)) return@launch
                 if (cached != null) {
-                    applyPagedGridResult(cached, emptyMessage = emptyMessage, animate = true, append = false)
+                    val page = if (cached.isFresh) nextVisiblePage(cached.value, requestId) else cached.value
+                    if (!shouldHandleLoadResult(requestId)) return@launch
+                    applyPagedGridResult(page, emptyMessage = emptyMessage, animate = true, append = false)
+                    if (cached.isFresh) return@launch
                     showingCached = true
                     delay(STALE_REFRESH_DELAY_MS)
                     if (!shouldHandleLoadResult(requestId)) return@launch
@@ -719,7 +741,9 @@ class MainActivity : AppCompatActivity() {
 
                 val fresh = nextVisiblePage(fetch(), requestId)
                 if (!shouldHandleLoadResult(requestId)) return@launch
-                applyPagedGridResult(fresh, emptyMessage = emptyMessage, animate = !showingCached, append = false)
+                if (fresh != cached?.value) {
+                    applyPagedGridResult(fresh, emptyMessage = emptyMessage, animate = !showingCached, append = false)
+                }
             } catch (error: Throwable) {
                 handleLoadFailure(requestId, errorPrefix, error, preserveContent = showingCached)
             }
@@ -729,7 +753,7 @@ class MainActivity : AppCompatActivity() {
     private fun <T> launchStaleFirstLoad(
         loadingMessage: String,
         errorPrefix: String,
-        peek: suspend () -> T?,
+        peek: suspend () -> CachedPage<T>?,
         fetch: suspend () -> T,
         render: (T, animate: Boolean) -> Unit,
     ) {
@@ -740,7 +764,8 @@ class MainActivity : AppCompatActivity() {
                 val cached = peek()
                 if (!shouldHandleLoadResult(requestId)) return@launch
                 if (cached != null) {
-                    render(cached, true)
+                    render(cached.value, true)
+                    if (cached.isFresh) return@launch
                     showingCached = true
                     delay(STALE_REFRESH_DELAY_MS)
                     if (!shouldHandleLoadResult(requestId)) return@launch
@@ -750,7 +775,7 @@ class MainActivity : AppCompatActivity() {
 
                 val fresh = fetch()
                 if (!shouldHandleLoadResult(requestId)) return@launch
-                render(fresh, !showingCached)
+                if (fresh != cached?.value) render(fresh, !showingCached)
             } catch (error: Throwable) {
                 handleLoadFailure(requestId, errorPrefix, error, preserveContent = showingCached)
             }
@@ -794,7 +819,7 @@ class MainActivity : AppCompatActivity() {
         binding.contentRecycler.isVisible = true
         if (binding.contentRecycler.adapter !== sectionAdapter) {
             binding.contentRecycler.layoutManager = LinearLayoutManager(this)
-            binding.contentRecycler.adapter = sectionAdapter
+            binding.contentRecycler.swapAdapter(sectionAdapter, true)
         }
         val visible = sections.map { section -> section.copy(items = visibleCards(section.items)) }.filter { it.items.isNotEmpty() }
         currentVisibleCards = visible.flatMap { it.items }.distinctBy { it.animeId }
@@ -848,7 +873,7 @@ class MainActivity : AppCompatActivity() {
             binding.contentRecycler.layoutManager = GridLayoutManager(this, GRID_SPAN_COUNT)
         }
         if (binding.contentRecycler.adapter !== gridAdapter) {
-            binding.contentRecycler.adapter = gridAdapter
+            binding.contentRecycler.swapAdapter(gridAdapter, true)
         }
     }
 
@@ -864,18 +889,13 @@ class MainActivity : AppCompatActivity() {
         val width = binding.contentStage.width
             .takeIf { it > 0 }?.toFloat()
             ?: resources.displayMetrics.widthPixels.toFloat()
-        val offset = width * 0.18f
-        target.alpha = 0.88f
+        val offset = width * 0.06f
         target.translationX = if (slideFromRight) offset else -offset
-        target.post {
-            target.animate().cancel()
-            target.animate()
-                .translationX(0f)
-                .alpha(1f)
-                .setDuration(260)
-                .setInterpolator(DecelerateInterpolator(2f))
-                .start()
-        }
+        target.animate()
+            .translationX(0f)
+            .setDuration(150)
+            .setInterpolator(DecelerateInterpolator(2f))
+            .start()
     }
 
     private fun Screen.navIndex() = navigationTabs.values.indexOf(this)
@@ -898,6 +918,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun replaceLoadRequest(): Long {
         loadJob?.cancel()
+        initialsSearchJob?.cancel()
         appendJob?.cancel()
         isAppendingGridPage = false
         return ++loadRequestId
@@ -1687,7 +1708,7 @@ class MainActivity : AppCompatActivity() {
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
 
         const val EXTRA_OPEN_ROUTE = "extra_open_route"
-        private const val NAV_FOCUS_DELAY_MS = 300L
+        private const val NAV_FOCUS_DELAY_MS = 150L
         private const val NAV_FOCUS_ARM_WINDOW_MS = 600L
         private const val SETTINGS_SHORTCUT_WINDOW_MS = 1_100L
         private const val STALE_REFRESH_DELAY_MS = 180L

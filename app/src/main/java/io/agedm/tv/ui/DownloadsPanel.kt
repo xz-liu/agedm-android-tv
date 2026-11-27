@@ -13,9 +13,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -29,9 +26,6 @@ import io.agedm.tv.ui.adapter.DownloadPosterAdapter
 import io.agedm.tv.ui.adapter.statusLabel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
 
 /** Same poster grid as the library, with an episode grid inside each downloaded show. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -42,7 +36,6 @@ internal class DownloadsPanel(
 ) {
     private val app get() = activity.application as AgeTvApplication
     private val store get() = app.offlineDownloads
-    private val active = MutableStateFlow(false)
     private val speedTracker = DownloadSpeedTracker()
     private var entries: List<DownloadEntry> = emptyList()
     private var selectedAnimeId: Long? = null
@@ -85,36 +78,34 @@ internal class DownloadsPanel(
         recycler.layoutManager = GridLayoutManager(activity, 6)
         recycler.adapter = posters
         updateToolbar()
-        activity.lifecycleScope.launch {
-            activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                active.collectLatest { visible ->
-                    if (!visible) return@collectLatest
-                    while (true) {
-                        try {
-                            val now = SystemClock.elapsedRealtime()
-                            entries = store.snapshot().filterNot { app.hiddenLibrary.contains(it.animeId) }.map { entry ->
-                                entry.copy(cover = entry.cover.ifBlank { app.ageRepository.buildCoverUrl(entry.animeId) },
-                                    bytesPerSecond = speedTracker.sample(entry.id, entry.bytes, entry.status == DownloadStatus.DOWNLOADING, now))
-                            }
-                            speedTracker.retain(entries.mapTo(mutableSetOf()) { it.id })
-                            render()
-                        } catch (error: Exception) {
-                            if (error is CancellationException) throw error
-                            summary.text = "读取下载失败：${error.message.orEmpty()}"
-                        }
-                        delay(1000L)
+    }
+
+    suspend fun refreshWhileVisible() {
+        try {
+            while (true) {
+                try {
+                    val now = SystemClock.elapsedRealtime()
+                    entries = store.snapshot().filterNot { app.hiddenLibrary.contains(it.animeId) }.map { entry ->
+                        entry.copy(cover = entry.cover.ifBlank { app.ageRepository.buildCoverUrl(entry.animeId) },
+                            bytesPerSecond = speedTracker.sample(entry.id, entry.bytes, entry.status == DownloadStatus.DOWNLOADING, now))
                     }
+                    speedTracker.retain(entries.mapTo(mutableSetOf()) { it.id })
+                    render()
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    summary.text = "读取下载失败：${error.message.orEmpty()}"
                 }
+                delay(1000L)
             }
+        } finally {
+            speedTracker.retain(emptySet())
         }
     }
 
     fun start() {
         DownloadService.sendResumeDownloads(activity, MediaDownloadService::class.java, false)
         store.resumeQueue()
-        active.value = true
     }
-    fun stop() { active.value = false; speedTracker.retain(emptySet()) }
     fun requestContentFocus(): Boolean = recycler.getChildAt(0)?.requestFocus() ?: firstToolbarButton().requestFocus()
     fun handleBack(): Boolean {
         if (selectedAnimeId == null) return false

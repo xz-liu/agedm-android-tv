@@ -52,6 +52,11 @@ class PosterCardAdapter(
     private var scorePrefetchJobs: List<Job> = emptyList()
     private var attachedRecyclerView: RecyclerView? = null
 
+    private val windowListener = object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(view: View) = restartScorePrefetch()
+        override fun onViewDetachedFromWindow(view: View) = cancelScorePrefetch()
+    }
+
     init {
         setHasStableIds(true)
     }
@@ -142,6 +147,7 @@ class PosterCardAdapter(
         }
     }
 
+    override fun getItemViewType(position: Int): Int = R.layout.item_poster_card
     override fun getItemCount(): Int = items.size
 
     override fun getItemId(position: Int): Long = items[position].animeId
@@ -149,10 +155,12 @@ class PosterCardAdapter(
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
         attachedRecyclerView = recyclerView
+        recyclerView.addOnAttachStateChangeListener(windowListener)
         restartScorePrefetch()
     }
 
     override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        recyclerView.removeOnAttachStateChangeListener(windowListener)
         cancelScorePrefetch()
         if (attachedRecyclerView === recyclerView) {
             attachedRecyclerView = null
@@ -251,6 +259,7 @@ class PosterCardAdapter(
     private fun restartScorePrefetch() {
         if (!prefetchScores) return
         val recyclerView = attachedRecyclerView ?: return
+        if (!recyclerView.isAttachedToWindow) return
         val lifecycleOwner = recyclerView.context.findLifecycleOwner() ?: return
         val app = recyclerView.context.applicationContext as? AgeTvApplication ?: return
         cancelScorePrefetch()

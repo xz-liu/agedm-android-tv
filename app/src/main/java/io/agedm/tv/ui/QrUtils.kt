@@ -6,12 +6,10 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 
 internal fun createQrBitmap(content: String): Bitmap {
-    val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 1000, 1000)
-    val bitmap = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.RGB_565)
-    for (x in 0 until matrix.width) {
-        for (y in 0 until matrix.height) {
-            bitmap.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
-        }
+    val modules = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 0, 0)
+    val pixels = IntArray(modules.width * modules.height) { i ->
+        if (modules[i % modules.width, i / modules.width]) Color.BLACK else Color.WHITE
     }
-    return bitmap
+    val bitmap = Bitmap.createBitmap(pixels, modules.width, modules.height, Bitmap.Config.RGB_565)
+    return Bitmap.createScaledBitmap(bitmap, modules.width * 8, modules.height * 8, false)
 }

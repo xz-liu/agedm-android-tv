@@ -22,6 +22,18 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], application = Application::class)
 class LocalLibraryTest {
+    @Test
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    fun castCodeCanBeScannedAfterScaling() {
+        val url = "http://192.168.1.101:9900/"
+        val bitmap = createQrBitmap(url)
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        val source = com.google.zxing.RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
+        val image = com.google.zxing.BinaryBitmap(com.google.zxing.common.HybridBinarizer(source))
+        assertEquals(url, com.google.zxing.qrcode.QRCodeReader().decode(image).text)
+    }
+
     @Test fun indexedTitlesAndAliasesWorkOfflineOnOlderTv() = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         val store = PersistentJsonStore(AppStorageDatabase.get(context))
@@ -99,8 +111,11 @@ class LocalLibraryTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup().visible()
         try {
             val activity = controller.get()
-            activity.findViewById<android.widget.Button>(R.id.navInitialsButton).performClick()
             val panel = activity.findViewById<android.widget.LinearLayout>(R.id.initialsPanel)
+            assertEquals(0, activity.findViewById<android.widget.LinearLayout>(R.id.downloadsContent).childCount)
+            val initialChildren = panel.childCount
+            activity.findViewById<android.widget.Button>(R.id.navInitialsButton).performClick()
+            assertEquals(initialChildren + 3, panel.childCount)
             fun press(text: String) {
                 val views = ArrayList<android.view.View>()
                 panel.findViewsWithText(views, text, android.view.View.FIND_VIEWS_WITH_TEXT)

@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import io.agedm.tv.R
 import io.agedm.tv.data.AnimeCard
 import io.agedm.tv.data.BrowseSection
 import io.agedm.tv.databinding.ItemBrowseSectionBinding
@@ -88,6 +89,7 @@ class BrowseSectionAdapter(
         onBindViewHolder(holder, position)
     }
 
+    override fun getItemViewType(position: Int): Int = R.layout.item_browse_section
     override fun getItemCount(): Int = items.size
 
     override fun getItemId(position: Int): Long {

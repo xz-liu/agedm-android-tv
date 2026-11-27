@@ -293,6 +293,14 @@ class AppStorageDatabase private constructor(context: Context) :
         )
     }
 
+    fun touchKvEntries(keys: List<String>) {
+        val now = ContentValues().apply { put("access_ts", System.currentTimeMillis()) }
+        for (batch in keys.chunked(500)) {
+            val placeholders = batch.joinToString(",") { "?" }
+            writableDatabase.update("kv_entries", now, "entry_key IN ($placeholders)", batch.toTypedArray())
+        }
+    }
+
     fun removeKvEntry(key: String) {
         writableDatabase.delete("kv_entries", "entry_key = ?", arrayOf(key))
     }
